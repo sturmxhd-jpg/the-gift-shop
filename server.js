@@ -525,19 +525,32 @@ async function handleAPI(req, res, pathname, query) {
         return sendJSON(res, 403, { error: 'Access denied. Invalid manager credentials.' });
       }
 
-      const user = users.find(u =>
+      // Prefer match by role when the app sends one (customer / business / delivery)
+      const candidates = users.filter(u =>
         (u.identifier && u.identifier.toLowerCase() === id) ||
         (u.email && u.email.toLowerCase() === id) ||
         (u.phone && u.phone.replace(/\s|-/g, '') === id.replace(/\s|-/g, ''))
       );
-      if (!user || user.password !== password) {
+      let user = null;
+      if (body.role) {
+        user = candidates.find(u => u.role === body.role && u.password === password);
+        if (!user && candidates.length) {
+          const wrongRole = candidates.find(u => u.password === password);
+          if (wrongRole) {
+            return sendJSON(res, 403, {
+              error: 'This email is registered as ' + wrongRole.role +
+                '. Go back and open the ' + wrongRole.role + ' portal, or create a ' + body.role + ' account with this email.'
+            });
+          }
+        }
+      } else {
+        user = candidates.find(u => u.password === password);
+      }
+      if (!user) {
         return sendJSON(res, 401, { error: 'Invalid email/phone or password' });
       }
       if (user.role === 'manager') {
         return sendJSON(res, 403, { error: 'Access denied' });
-      }
-      if (body.role && user.role !== body.role) {
-        return sendJSON(res, 403, { error: 'This account is registered as ' + user.role });
       }
       return sendJSON(res, 200, { success: true, user: publicUser(user) });
     } catch (e) {
@@ -567,11 +580,16 @@ async function handleAPI(req, res, pathname, query) {
       if (role === 'business' && !(body.businessName || '').trim()) {
         return sendJSON(res, 400, { error: 'Business name required' });
       }
+      // Same email may register once per role (customer / business / delivery)
       if (users.find(u =>
-        (u.email && u.email.toLowerCase() === email) ||
-        (u.identifier && u.identifier.toLowerCase() === identifier.toLowerCase())
+        u.role === role && (
+          (u.email && u.email.toLowerCase() === email) ||
+          (u.identifier && u.identifier.toLowerCase() === identifier.toLowerCase())
+        )
       )) {
-        return sendJSON(res, 409, { error: 'Account already exists — please sign in' });
+        return sendJSON(res, 409, {
+          error: 'An account with this email already exists for this role — please sign in'
+        });
       }
 
       const user = {

@@ -36,22 +36,26 @@ function registerLocalUser(payload) {
   const list = loadLocalUsers();
   const email = (payload.email || "").toLowerCase();
   const identifier = (payload.identifier || email).toLowerCase();
+  const role = payload.role || "customer";
+  // One email can have a separate account per role
   if (list.find(u =>
-    (u.email && u.email.toLowerCase() === email) ||
-    (u.identifier && u.identifier.toLowerCase() === identifier)
+    u.role === role && (
+      (u.email && u.email.toLowerCase() === email) ||
+      (u.identifier && u.identifier.toLowerCase() === identifier)
+    )
   )) {
-    return { success: false, error: "Account already exists — please sign in" };
+    return { success: false, error: "An account with this email already exists for this role — please sign in" };
   }
   const user = {
-    id: "L" + Date.now(),
+    id: "L" + Date.now() + Math.random().toString(36).slice(2, 6),
     identifier: payload.identifier || email,
     password: payload.password,
     name: payload.name,
-    role: payload.role || "customer",
+    role: role,
     phone: payload.phone || "",
     email: email,
     businessName: payload.businessName || null,
-    riderId: payload.role === "delivery" ? "R" + Date.now().toString(36) : null,
+    riderId: role === "delivery" ? "R" + Date.now().toString(36) : null,
     createdAt: new Date().toISOString()
   };
   list.push(user);
@@ -62,17 +66,28 @@ function registerLocalUser(payload) {
 function loginLocalUser(identifier, password, role) {
   const id = (identifier || "").toLowerCase();
   const list = loadLocalUsers();
-  const user = list.find(u =>
-    u.password === password && (
-      (u.identifier && u.identifier.toLowerCase() === id) ||
-      (u.email && u.email.toLowerCase() === id) ||
-      (u.phone && u.phone.replace(/\s|-/g, "") === id.replace(/\s|-/g, ""))
-    )
+  const candidates = list.filter(u =>
+    (u.identifier && u.identifier.toLowerCase() === id) ||
+    (u.email && u.email.toLowerCase() === id) ||
+    (u.phone && u.phone.replace(/\s|-/g, "") === id.replace(/\s|-/g, ""))
   );
-  if (!user) return { success: false, error: "Invalid email/phone or password" };
-  if (role && user.role !== role) {
-    return { success: false, error: "This account is registered as " + user.role };
+  let user = null;
+  if (role) {
+    user = candidates.find(u => u.role === role && u.password === password);
+    if (!user) {
+      const wrong = candidates.find(u => u.password === password);
+      if (wrong) {
+        return {
+          success: false,
+          error: "This email is registered as " + wrong.role +
+            ". Open the " + wrong.role + " portal, or create a " + role + " account with this email."
+        };
+      }
+    }
+  } else {
+    user = candidates.find(u => u.password === password);
   }
+  if (!user) return { success: false, error: "Invalid email/phone or password" };
   const { password: _p, ...pub } = user;
   return { success: true, user: pub, local: true };
 }
