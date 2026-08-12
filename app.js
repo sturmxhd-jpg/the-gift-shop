@@ -155,6 +155,33 @@ let incomingOrders = []; // Real orders only
 
 
 let riderOrders = []; // Real delivery jobs only
+function saveRiderOrders() {
+  try { localStorage.setItem('tgs_rider_orders', JSON.stringify(riderOrders)); } catch (_) {}
+}
+function loadRiderOrders() {
+  try {
+    const raw = localStorage.getItem('tgs_rider_orders');
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (Array.isArray(p)) riderOrders = p;
+    }
+  } catch (_) {}
+}
+loadRiderOrders();
+loadIncomingOrders();
+
+function saveIncomingOrders() {
+  try { localStorage.setItem('tgs_incoming_orders', JSON.stringify(incomingOrders)); } catch (_) {}
+}
+function loadIncomingOrders() {
+  try {
+    const raw = localStorage.getItem('tgs_incoming_orders');
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (Array.isArray(p)) incomingOrders = p;
+    }
+  } catch (_) {}
+}
 
 
 // ===== STATE =====
@@ -731,21 +758,25 @@ function renderDeals(filter = 'all') {
 
   feed.innerHTML = filtered.map(d => {
     const logo = (typeof getBusinessLogo === 'function' && getBusinessLogo(d.business)) || d.businessLogo || null;
+    const disc = d.discount || (d.original > d.price ? Math.round((1 - d.price / d.original) * 100) : 0);
+    const photoHtml = d.photo
+      ? `<img class="deal-photo" src="${d.photo}" alt="${(d.title || '').replace(/"/g, '')}">`
+      : `<span class="deal-emoji-fallback">${d.emoji || '🎁'}</span>`;
     return `
-    <div class="deal-card" onclick="openDeal(${d.id})">
-      <div class="deal-img" ${d.photo ? `style="background-image:url('${d.photo}');background-size:cover;background-position:center"` : ''}>
-        <span class="deal-badge">-${d.discount}%</span>
-        ${d.photo ? '' : d.emoji}
+    <div class="deal-card" onclick="openDeal(${typeof d.id === 'string' ? `'${d.id}'` : d.id})">
+      <div class="deal-img ${d.photo ? 'has-photo' : ''}">
+        <span class="deal-badge">-${disc}%</span>
+        ${photoHtml}
       </div>
       <div class="deal-body">
         <div class="deal-biz">
           ${logo ? `<img class="biz-logo-inline" src="${logo}" alt="">` : `<span class="biz-logo-placeholder">🏪</span>`}
-          <span>${d.business}</span>
+          <span>${d.business || ''}</span>
         </div>
         <div class="deal-title">${d.title}</div>
         <div class="deal-prices">
-          <span class="deal-price">GYD ${d.price.toLocaleString()}</span>
-          <span class="deal-original">GYD ${d.original.toLocaleString()}</span>
+          <span class="deal-price">GYD ${(d.price || 0).toLocaleString()}</span>
+          <span class="deal-original">GYD ${(d.original || d.price || 0).toLocaleString()}</span>
         </div>
         <div class="deal-meta">
           <span>${d.expires || ((d.daysLeft || 5) + ' days left')}</span>
@@ -758,7 +789,7 @@ function renderDeals(filter = 'all') {
 }
 
 function openDeal(id) {
-  const d = deals.find(x => x.id === id);
+  const d = deals.find(x => String(x.id) === String(id));
   if (!d) return;
   
   document.getElementById('deal-detail').innerHTML = `
@@ -889,7 +920,8 @@ function placeOrder() {
         item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
         total: parseInt(totalTxt, 10) || 0,
         address: addr,
-        phone: phone
+        phone: phone,
+        business: (cart && cart[0] && cart[0].business) || ''
       });
       window.activeTrackOrderId = live.id;
       window.lastDelivery.orderId = live.id;
@@ -2086,7 +2118,8 @@ placeOrder = function() {
         item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
         total: parseInt(totalTxt, 10) || 0,
         address: addr,
-        phone: phone
+        phone: phone,
+        business: (cart && cart[0] && cart[0].business) || ''
       });
       window.activeTrackOrderId = live.id;
       window.lastDelivery.orderId = live.id;
@@ -2223,7 +2256,8 @@ placeOrder = function() {
         item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
         total: parseInt(totalTxt, 10) || 0,
         address: addr,
-        phone: phone
+        phone: phone,
+        business: (cart && cart[0] && cart[0].business) || ''
       });
       window.activeTrackOrderId = live.id;
       window.lastDelivery.orderId = live.id;
@@ -3009,26 +3043,49 @@ function createLiveOrder(payload) {
     });
   }
 
-  // Rider portal — real delivery job
+  // Business portal — persist
+  if (typeof saveIncomingOrders === 'function') saveIncomingOrders();
+
+  // Rider portal — real delivery job (all available riders can accept)
+  const job = {
+    id,
+    business: payload.business || (cart && cart[0] && (cart[0].business || cart[0].store)) || 'Business',
+    item,
+    address: payload.address || '',
+    phone: payload.phone || '',
+    customer: customerName,
+    fee: Math.max(400, Math.round((payload.total || 0) * 0.08)),
+    distance: '—',
+    lat: 6.812,
+    lng: -58.155,
+    total: payload.total || 0,
+    createdAt: new Date().toISOString(),
+    status: 'available'
+  };
   if (typeof riderOrders !== 'undefined') {
-    riderOrders.unshift({
-      id,
-      business: payload.business || (deals[0] && deals[0].business) || 'Business',
-      item,
-      address: payload.address || '',
-      phone: payload.phone || '',
-      customer: customerName,
-      fee: Math.max(400, Math.round((payload.total || 0) * 0.08)),
-      distance: '—',
-      lat: 6.812,
-      lng: -58.155
-    });
+    // avoid duplicate
+    if (!riderOrders.find(r => r.id === id)) riderOrders.unshift(job);
+    if (typeof saveRiderOrders === 'function') saveRiderOrders();
+  }
+
+  // Notify server so other devices/tabs can pick up the job
+  if (typeof api === 'function') {
+    api('/api/riders/jobs', { method: 'POST', body: JSON.stringify(job) }).catch(() => {});
   }
 
   if (typeof logActivity === 'function') {
     logActivity('order', 'New order ' + id + ' · ' + item + ' · GYD ' + (payload.total || 0), {
       orderId: id, customer: customerName
     });
+  }
+
+  // Live-update rider UI if portal is open (same browser) or after refresh
+  if (typeof renderRider === 'function' && document.getElementById('delivery-app')?.classList.contains('active')) {
+    renderRider();
+    showToast('New delivery job available 🛵');
+  }
+  if (typeof renderBusiness === 'function' && document.getElementById('business-app')?.classList.contains('active')) {
+    renderBusiness();
   }
 
   setTimeout(() => {
@@ -3338,3 +3395,79 @@ async function refreshDealsFromServer() {
     }
   } catch (_) {}
 }
+
+// ===== AUTO-REFRESH (all portals) =====
+let autoRefreshTimer = null;
+let autoRefreshOn = false;
+
+function toggleAutoRefresh(on) {
+  autoRefreshOn = !!on;
+  try { localStorage.setItem('tgs_auto_refresh', autoRefreshOn ? '1' : '0'); } catch (_) {}
+  // Sync all checkboxes
+  ['auto-refresh-customer','auto-refresh-business','auto-refresh-delivery','auto-refresh-manager'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = autoRefreshOn;
+    const lab = el && el.closest('.auto-refresh-chip');
+    if (lab) lab.classList.toggle('on', autoRefreshOn);
+  });
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  if (autoRefreshOn) {
+    autoRefreshTimer = setInterval(runAutoRefresh, 5000);
+    runAutoRefresh();
+    showToast('Live auto-refresh on (every 5s)');
+  } else {
+    showToast('Auto-refresh off');
+  }
+}
+
+async function runAutoRefresh() {
+  if (!autoRefreshOn) return;
+  const role = currentUser && currentUser.role;
+  try {
+    // Always refresh deals for customers / general
+    if (typeof refreshDealsFromServer === 'function') await refreshDealsFromServer();
+
+    // Rider jobs from server
+    if (typeof api === 'function') {
+      const jobs = await api('/api/riders/jobs');
+      const list = jobs && (jobs.jobs || (Array.isArray(jobs) ? jobs : null));
+      if (list) {
+        // Merge available jobs
+        list.forEach(j => {
+          if (!riderOrders.find(r => r.id === j.id)) riderOrders.push(j);
+        });
+        saveRiderOrders();
+      }
+    }
+
+    if (document.getElementById('customer-app')?.classList.contains('active')) {
+      if (typeof renderDeals === 'function') renderDeals(document.querySelector('.cat.active')?.dataset?.cat || 'all');
+      if (typeof renderCustomerOrders === 'function') renderCustomerOrders();
+      if (typeof updateLiveTrackBanner === 'function') updateLiveTrackBanner();
+    }
+    if (document.getElementById('business-app')?.classList.contains('active')) {
+      if (typeof renderBusiness === 'function') renderBusiness();
+    }
+    if (document.getElementById('delivery-app')?.classList.contains('active')) {
+      if (typeof loadRiderOrders === 'function') loadRiderOrders();
+      if (typeof renderRider === 'function') renderRider();
+      if (typeof loadPodHistory === 'function') loadPodHistory();
+    }
+    if (document.getElementById('manager-app')?.classList.contains('active')) {
+      if (typeof refreshManagerFromServer === 'function') await refreshManagerFromServer();
+      if (typeof renderManager === 'function') renderManager();
+    }
+  } catch (e) {
+    console.warn('auto-refresh', e);
+  }
+}
+
+// Restore auto-refresh preference
+try {
+  if (localStorage.getItem('tgs_auto_refresh') === '1') {
+    setTimeout(() => toggleAutoRefresh(true), 800);
+  }
+} catch (_) {}

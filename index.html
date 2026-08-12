@@ -172,6 +172,10 @@
         <span class="app-name">The Gift Shop</span>
         <span class="location">📍 Georgetown</span>
       </div>
+      <label class="auto-refresh-chip" title="Auto-refresh">
+        <input type="checkbox" id="auto-refresh-customer" onchange="toggleAutoRefresh(this.checked)">
+        <span>↻ Live</span>
+      </label>
       <button class="icon-btn" onclick="showCart()">🛒 <span id="cart-count" class="badge">0</span></button>
     </header>
 
@@ -533,6 +537,10 @@
         <span class="app-name">Business Portal</span>
         <span class="location">Island Breeze Restaurant</span>
       </div>
+      <label class="auto-refresh-chip" title="Auto-refresh">
+        <input type="checkbox" id="auto-refresh-business" onchange="toggleAutoRefresh(this.checked)">
+        <span>↻ Live</span>
+      </label>
       <span class="plan-badge" id="biz-plan-badge">Free Trial</span>
     </header>
 
@@ -667,6 +675,10 @@
         <span class="app-name">Rider App</span>
         <span class="location" id="rider-loc-label">Online • Georgetown</span>
       </div>
+      <label class="auto-refresh-chip light" title="Auto-refresh">
+        <input type="checkbox" id="auto-refresh-delivery" onchange="toggleAutoRefresh(this.checked)">
+        <span>↻ Live</span>
+      </label>
       <span class="earnings-badge" id="rider-earnings">GYD 0</span>
     </header>
 
@@ -703,6 +715,10 @@
         <span class="app-name">Manager Portal</span>
         <span class="location" id="mgr-user-label">Admin</span>
       </div>
+      <label class="auto-refresh-chip light" title="Auto-refresh">
+        <input type="checkbox" id="auto-refresh-manager" onchange="toggleAutoRefresh(this.checked)">
+        <span>↻ Live</span>
+      </label>
       <button class="primary-btn small mgr-save-btn" onclick="saveAllManagerChanges()" title="Save all changes">💾 Save</button>
     </header>
 

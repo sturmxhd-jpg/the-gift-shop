@@ -381,7 +381,37 @@ async function handleAPI(req, res, pathname, query) {
   }
 
   if (pathname === '/api/riders/jobs' && method === 'GET') {
-    return sendJSON(res, 200, availableJobs);
+    return sendJSON(res, 200, { jobs: availableJobs });
+  }
+
+  if (pathname === '/api/riders/jobs' && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      if (!body.id || !body.item) {
+        return sendJSON(res, 400, { error: 'id and item required' });
+      }
+      const exists = availableJobs.find(j => j.id === body.id);
+      if (!exists) {
+        availableJobs.unshift({
+          id: body.id,
+          business: body.business || 'Business',
+          item: body.item,
+          address: body.address || '',
+          phone: body.phone || '',
+          customer: body.customer || 'Customer',
+          fee: body.fee || 400,
+          distance: body.distance || '—',
+          lat: body.lat || 6.812,
+          lng: body.lng || -58.155,
+          total: body.total || 0,
+          createdAt: body.createdAt || new Date().toISOString(),
+          status: 'available'
+        });
+      }
+      return sendJSON(res, 201, { success: true, jobs: availableJobs });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid JSON' });
+    }
   }
 
   const acceptMatch = pathname.match(/^\/api\/riders\/jobs\/([^/]+)\/accept$/);
