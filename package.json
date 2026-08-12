@@ -1,0 +1,12 @@
+{
+  "name": "the-gift-shop",
+  "version": "1.0.0",
+  "description": "The Gift Shop – Guyana deals marketplace (Artistic Marketing Inc.)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

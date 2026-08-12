@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>The Gift Shop – Guyana</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Role Selector (Prototype Launcher) -->
+  <div id="role-selector" class="screen active">
+    <div class="launcher">
+      <div class="logo-area">
+        <div class="logo-icon">🎁</div>
+        <h1>The Gift Shop</h1>
+        <p class="tagline">Guyana’s deals, delivered.</p>
+        <div class="guyana-badge">
+          <img src="assets/guyana-flag.png" alt="Guyana flag" class="gy-flag-sm">
+          <span>Proudly Guyanese</span>
+        </div>
+      </div>
+      <p class="launcher-sub">Choose a role, then sign in</p>
+      <div class="role-cards">
+        <button class="role-card" onclick="startLogin('customer')">
+          <span class="role-icon">👤</span>
+          <span class="role-title">Customer App</span>
+          <span class="role-desc">Browse deals, order & track</span>
+        </button>
+        <button class="role-card" onclick="startLogin('business')">
+          <span class="role-icon">🏪</span>
+          <span class="role-title">Business Portal</span>
+          <span class="role-desc">Post deals & view settlements</span>
+        </button>
+        <button class="role-card" onclick="startLogin('delivery')">
+          <span class="role-icon">🛵</span>
+          <span class="role-title">Delivery Partner</span>
+          <span class="role-desc">Accept & fulfill orders</span>
+        </button>
+        <button class="role-card manager-role" onclick="startLogin('manager')">
+          <span class="role-icon">🛡️</span>
+          <span class="role-title">Manager Portal</span>
+          <span class="role-desc">Admin: ads, users & businesses</span>
+        </button>
+      </div>
+      <p class="prototype-note">Interactive prototype • Sample data for Georgetown, Guyana</p>
+    </div>
+  </div>
+
+
+  <!-- ==================== LOGIN ==================== -->
+  <div id="login-screen" class="screen">
+    <div class="login-wrap">
+      <button class="back-btn login-back" onclick="backToRoles()">←</button>
+      <div class="login-header">
+        <img src="assets/guyana-flag.png" alt="" class="gy-flag-sm">
+        <h2 id="login-role-title">Sign in</h2>
+        <p class="small" id="login-role-sub">Welcome to The Gift Shop</p>
+      </div>
+
+      <!-- Ad banner (login only) -->
+      <div class="ad-banner" onclick="showToast('Advertise on The Gift Shop — contact support')">
+        <div class="ad-badge">Ad</div>
+        <div class="ad-body">
+          <strong>Promote your business here</strong>
+          <span>Reach shoppers across Guyana · From GYD 5,000/mo</span>
+        </div>
+        <span class="ad-cta">Learn more →</span>
+      </div>
+
+      <div class="login-tabs">
+        <button class="login-tab active" data-mode="signin" onclick="setAuthMode('signin')">Sign in</button>
+        <button class="login-tab" data-mode="signup" onclick="setAuthMode('signup')">Create account</button>
+      </div>
+
+      <form id="login-form" class="login-form" onsubmit="return handleAuth(event)">
+        <div class="form-group" id="name-group" style="display:none">
+          <label>Full name</label>
+          <input type="text" id="auth-name" placeholder="e.g. Aaliyah Rodrigues" autocomplete="name">
+        </div>
+        <div class="form-group">
+          <label>Phone or email</label>
+          <input type="text" id="auth-identifier" placeholder="592-6XX-XXXX or you@email.com" autocomplete="username" required>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password" required>
+        </div>
+        <div class="form-group" id="business-group" style="display:none">
+          <label>Business name</label>
+          <input type="text" id="auth-business" placeholder="e.g. Island Breeze Restaurant">
+        </div>
+        <button type="submit" class="primary-btn" id="auth-submit">Sign in</button>
+      </form>
+
+      <div class="demo-accounts">
+        <p class="small">Demo accounts (tap to fill)</p>
+        <button type="button" class="demo-chip" onclick="fillDemo('customer')">Customer · 592-612-3456</button>
+        <button type="button" class="demo-chip" onclick="fillDemo('business')">Business · island@breeze.gy</button>
+        <button type="button" class="demo-chip" onclick="fillDemo('delivery')">Rider · 592-671-8801</button>
+        <button type="button" class="demo-chip" onclick="fillDemo('manager')">Manager · admin@giftshop.gy</button>
+      </div>
+      <p class="login-note">Password for all demos: <strong>giftshop</strong></p>
+    </div>
+  </div>
+
+  <!-- ==================== CUSTOMER APP ==================== -->
+  <div id="customer-app" class="screen">
+    <!-- Top Bar -->
+    <header class="app-header">
+      <button class="back-btn" onclick="switchRole('selector')">←</button>
+      <div class="header-center">
+        <span class="app-name">The Gift Shop</span>
+        <span class="location">📍 Georgetown</span>
+      </div>
+      <button class="icon-btn" onclick="showCart()">🛒 <span id="cart-count" class="badge">0</span></button>
+    </header>
+
+    <!-- Search -->
+    <div class="search-bar">
+      <input type="text" placeholder="Search deals, restaurants, gifts..." id="search-input">
+    </div>
+
+    <!-- Categories -->
+    <div class="categories">
+      <button class="cat active" data-cat="all">All</button>
+      <button class="cat" data-cat="food">Food</button>
+      <button class="cat" data-cat="gifts">Gifts</button>
+      <button class="cat" data-cat="fashion">Fashion</button>
+      <button class="cat" data-cat="beauty">Beauty</button>
+      <button class="cat" data-cat="services">Services</button>
+    </div>
+
+    <!-- Ad banner (customer portal only) -->
+    <div class="ad-banner customer-ad" id="customer-ad-banner" onclick="showToast('Sponsored · Island Breeze — try Pepperpot this week!')">
+      <div class="ad-badge">Sponsored</div>
+      <div class="ad-body">
+        <strong>🍲 Island Breeze — Pepperpot Special</strong>
+        <span>GYD 4,800 · Free delivery over GYD 4,000 · Georgetown</span>
+      </div>
+      <span class="ad-cta">View →</span>
+    </div>
+
+    <!-- Deals Feed -->
+    <main class="deals-feed" id="deals-feed">
+      <!-- Populated by JS -->
+    </main>
+
+    <!-- Profile Panel -->
+    <div id="profile-panel" class="profile-panel hidden">
+      <div class="profile-header">
+        <div class="profile-avatar">
+          <img src="assets/guyana-flag.png" alt="Guyana flag" class="gy-flag-avatar">
+        </div>
+        <div>
+          <strong>Welcome</strong>
+          <div class="small">Georgetown, Guyana</div>
+        </div>
+      </div>
+      <div class="guyana-card">
+        <img src="assets/guyana-flag.png" alt="Guyana flag" class="gy-flag-lg">
+        <div>
+          <strong>Proudly Guyanese</strong>
+          <p>Supporting local businesses from Georgetown to Linden and beyond.</p>
+        </div>
+      </div>
+      <div class="profile-links">
+        <div class="profile-link">📍 Delivery addresses</div>
+        <div class="profile-link">🛒 Order history</div>
+        <div class="profile-link">⚙️ Settings</div>
+        <div class="profile-link">💬 Help & support</div>
+        <div class="profile-link" onclick="logout()" style="color:#dc2626">🚪 Sign out</div>
+      </div>
+    </div>
+
+    <!-- Bottom Nav -->
+    <nav class="bottom-nav">
+      <button class="nav-item active" data-tab="home" onclick="showCustomerTab('home')"><span>🏠</span>Home</button>
+      <button class="nav-item" data-tab="orders" onclick="showCustomerTab('orders')"><span>📦</span>Orders</button>
+      <button class="nav-item" data-tab="saved" onclick="showCustomerTab('saved')"><span>❤️</span>Saved</button>
+      <button class="nav-item" data-tab="profile" onclick="showCustomerTab('profile')"><span>👤</span>Profile</button>
+    </nav>
+  </div>
+
+  <!-- Deal Detail Modal -->
+  <div id="deal-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <div id="deal-detail"></div>
+    </div>
+  </div>
+
+  <!-- Cart / Checkout Modal -->
+  <div id="cart-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Your Cart</h2>
+      <div id="cart-items"></div>
+      <div class="checkout-options">
+        <label><input type="radio" name="fulfillment" value="pickup" checked onchange="updateCartTotal()"> Pickup in-store</label>
+        <label><input type="radio" name="fulfillment" value="delivery" onchange="updateCartTotal()"> Delivery</label>
+      </div>
+      <div id="delivery-details" class="hidden">
+        <div class="form-group">
+          <label>Delivery Address <span class="small">(tap to edit)</span></label>
+          <input type="text" id="delivery-address" placeholder="Enter or edit your delivery address" value="12 Lamaha Street, Georgetown" autocomplete="street-address">
+        </div>
+        <div class="form-group">
+          <label>Contact Number</label>
+          <input type="tel" id="delivery-phone" placeholder="e.g. 592-612-3456" value="592-612-3456">
+        </div>
+        <div class="form-group">
+          <label>Delivery Notes (optional)</label>
+          <input type="text" id="delivery-notes" placeholder="Gate code, landmark, etc.">
+        </div>
+      </div>
+      <div id="delivery-fee-row" class="hidden">
+        <p>Delivery fee: <strong id="delivery-fee-amount">GYD 500</strong></p>
+        <p class="small">Free delivery on orders GYD 4,000+</p>
+      </div>
+      <div class="payment-section">
+        <div class="form-group" style="margin-bottom:8px">
+          <label>Payment method</label>
+        </div>
+        <div class="pay-methods" id="pay-methods">
+          <label class="pay-option">
+            <input type="radio" name="pay-method" value="cod" checked>
+            <span class="pay-icon">💵</span>
+            <span class="pay-text">
+              <strong>Cash on Delivery</strong>
+              <small>Pay the rider when you receive your order</small>
+            </span>
+          </label>
+          <label class="pay-option">
+            <input type="radio" name="pay-method" value="mmg">
+            <span class="pay-icon">📱</span>
+            <span class="pay-text">
+              <strong>MMG (Mobile Money)</strong>
+              <small>Pay instantly from your MMG wallet</small>
+            </span>
+          </label>
+          <label class="pay-option">
+            <input type="radio" name="pay-method" value="bank">
+            <span class="pay-icon">🏦</span>
+            <span class="pay-text">
+              <strong>Bank Transfer</strong>
+              <small>Republic, GBTI, Demerara & others</small>
+            </span>
+          </label>
+          <label class="pay-option">
+            <input type="radio" name="pay-method" value="card">
+            <span class="pay-icon">💳</span>
+            <span class="pay-text">
+              <strong>Card (Visa / Mastercard)</strong>
+              <small>Secure online card payment</small>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div id="mmg-panel" class="pay-panel hidden">
+        <p class="small">You will confirm payment in the MMG app. Enter the phone number linked to your MMG wallet:</p>
+        <input type="tel" id="mmg-phone" placeholder="e.g. 592-6XX-XXXX" value="592-612-3456">
+      </div>
+      <div id="bank-panel" class="pay-panel hidden">
+        <p class="small">Transfer to The Gift Shop and use your order number as reference. We confirm within minutes.</p>
+        <div class="bank-details">
+          <div><strong>Bank:</strong> Republic Bank (Guyana)</div>
+          <div><strong>Account name:</strong> The Gift Shop Inc.</div>
+          <div><strong>Account #:</strong> 123-456-7890</div>
+          <div><strong>Reference:</strong> Your order ID</div>
+        </div>
+      </div>
+      <div id="card-panel" class="pay-panel hidden">
+        <p class="small">You will be redirected to a secure card page (Visa / Mastercard). Prototype simulates success.</p>
+      </div>
+
+      <div class="total-row">
+        <span>Total</span>
+        <strong id="cart-total">GYD 0</strong>
+      </div>
+      <button class="primary-btn" id="place-order-btn" onclick="placeOrder()">Place Order</button>
+    </div>
+  </div>
+
+  <div id="tracking-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Track Your Order</h2>
+      <div class="tracking-status">
+        <div class="status-step active">Confirmed</div>
+        <div class="status-step active">Preparing</div>
+        <div class="status-step active">On the way</div>
+        <div class="status-step">Delivered</div>
+      </div>
+      <div class="live-map">
+        <div id="customer-map" class="gps-map"></div>
+        <div class="map-overlay-info">
+          <span id="track-eta">ETA —</span>
+          <span id="track-distance">—</span>
+        </div>
+      </div>
+      <div class="rider-info-card">
+        <div class="rider-avatar" id="track-rider-avatar">🧔</div>
+        <div class="rider-details">
+          <strong id="track-rider-name">Marcus D.</strong>
+          <div class="small">Your rider • <span id="track-rider-rating">4.9 ★</span></div>
+          <div class="rider-phone-row">
+            <span>📞</span>
+            <a href="tel:+5926718801" id="track-rider-phone" class="rider-phone-link">592-671-8801</a>
+          </div>
+        </div>
+        <a href="tel:+5926718801" id="track-rider-call-btn" class="call-btn">Call Rider</a>
+      </div>
+      <div class="delivery-info-box">
+        <div><strong>Delivering to:</strong></div>
+        <div id="track-address">12 Lamaha Street, Georgetown</div>
+        <div class="small" id="track-phone">Your contact: 592-612-3456</div>
+      </div>
+
+      <button type="button" class="demo-delivered-btn" id="demo-delivered-btn" onclick="markOrderDeliveredForRating()">
+        ✓ Mark as delivered (demo) — then rate rider
+      </button>
+
+      <!-- Rider rating (shown after delivery) -->
+      <div id="rider-rating-panel" class="rider-rating-panel hidden">
+        <h3>Rate your rider</h3>
+        <p class="small" id="rate-rider-prompt">How was your delivery with <span id="rate-rider-name">Marcus D.</span>?</p>
+        <div class="star-row" id="star-row">
+          <button type="button" class="star-btn" data-star="1" aria-label="1 star">★</button>
+          <button type="button" class="star-btn" data-star="2" aria-label="2 stars">★</button>
+          <button type="button" class="star-btn" data-star="3" aria-label="3 stars">★</button>
+          <button type="button" class="star-btn" data-star="4" aria-label="4 stars">★</button>
+          <button type="button" class="star-btn" data-star="5" aria-label="5 stars">★</button>
+        </div>
+        <div class="form-group" style="margin-top:10px">
+          <label>Comment (optional)</label>
+          <input type="text" id="rating-comment" placeholder="Friendly, on time, careful with package…">
+        </div>
+        <button class="primary-btn" id="submit-rating-btn" onclick="submitRiderRating()" disabled style="opacity:0.5;margin-top:10px">
+          Submit rating
+        </button>
+      </div>
+      <div id="rating-thanks" class="rating-thanks hidden">
+        <div style="font-size:28px">⭐</div>
+        <strong>Thanks for your feedback!</strong>
+        <p class="small" id="rating-thanks-detail"></p>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- New Deal Composer -->
+  <div id="new-deal-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2 id="nd-modal-title">Post a New Deal</h2>
+      <form id="new-deal-form" onsubmit="return submitNewDeal(event)">
+        <input type="hidden" id="nd-edit-id" value="">
+        <div class="form-group">
+          <label>Product photo</label>
+          <div class="photo-upload" id="nd-photo-box">
+            <input type="file" id="nd-photo" accept="image/*" capture="environment" onchange="previewDealPhoto(event)">
+            <div id="nd-photo-placeholder" class="photo-placeholder">
+              <span style="font-size:28px">📷</span>
+              <span>Tap to upload product photo</span>
+            </div>
+            <img id="nd-photo-preview" class="photo-preview hidden" alt="Product preview">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Deal title</label>
+          <input type="text" id="nd-title" placeholder="e.g. Weekend Pepperpot Special" required>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <input type="text" id="nd-desc" placeholder="Short description for customers">
+        </div>
+        <div class="form-row" style="display:flex;gap:10px">
+          <div class="form-group" style="flex:1">
+            <label>Deal price (GYD)</label>
+            <input type="number" id="nd-price" min="100" step="100" placeholder="4800" required>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label>Original price (GYD)</label>
+            <input type="number" id="nd-original" min="100" step="100" placeholder="6500">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Category</label>
+          <select id="nd-category">
+            <option value="food">Food</option>
+            <option value="gifts">Gifts</option>
+            <option value="fashion">Fashion</option>
+            <option value="beauty">Beauty</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Days active</label>
+          <select id="nd-days">
+            <option value="3">3 days</option>
+            <option value="5" selected>5 days</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Emoji / icon</label>
+          <input type="text" id="nd-emoji" value="🎁" maxlength="4" style="font-size:20px">
+        </div>
+        <button type="submit" class="primary-btn" id="nd-submit-btn">Publish Deal</button>
+      </form>
+    </div>
+  </div>
+
+
+  <!-- Subscription MMG payment -->
+  <div id="sub-pay-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Subscribe — GYD 5,000 / month</h2>
+      <p class="small" style="margin-bottom:12px">
+        Full access: up to <strong>10 deals</strong> per month, plus orders & settlements. Pay with MMG to the number below.
+      </p>
+      <div class="mmg-pay-box">
+        <div class="mmg-label">Send MMG to</div>
+        <div class="mmg-number">6124940</div>
+        <div class="mmg-amount">Amount: <strong>GYD 5,000</strong></div>
+        <div class="mmg-ref">Reference: <span id="mmg-ref">TGS-SUB</span></div>
+      </div>
+      <div class="form-group">
+        <label>Your MMG phone number</label>
+        <input type="tel" id="sub-mmg-phone" placeholder="592-6XX-XXXX" value="592-">
+      </div>
+      <div class="form-group">
+        <label>Transaction ID / reference (from MMG)</label>
+        <input type="text" id="sub-mmg-txid" placeholder="e.g. MMG-12345678">
+      </div>
+      <button class="primary-btn" onclick="confirmSubscriptionPayment()">
+        I’ve paid — Activate subscription
+      </button>
+      <p class="small" style="text-align:center;margin-top:10px;color:var(--muted)">
+        In production this is verified automatically with the MMG merchant API.
+      </p>
+    </div>
+  </div>
+
+  <!-- ==================== BUSINESS PORTAL ==================== -->
+  <div id="business-app" class="screen">
+    <header class="app-header business-header">
+      <button class="back-btn" onclick="switchRole('selector')">←</button>
+      <div class="header-center">
+        <span class="app-name">Business Portal</span>
+        <span class="location">Island Breeze Restaurant</span>
+      </div>
+      <span class="plan-badge" id="biz-plan-badge">Free Trial</span>
+    </header>
+
+    <div class="biz-tabs">
+      <button class="biz-tab active" data-biz="dashboard">Dashboard</button>
+      <button class="biz-tab" data-biz="deals">My Deals</button>
+      <button class="biz-tab" data-biz="orders">Orders</button>
+      <button class="biz-tab" data-biz="settlement">Settlement</button>
+      <button class="biz-tab" data-biz="promote">Promote</button>
+    </div>
+
+    <main class="biz-content">
+      <!-- Dashboard -->
+      <div id="biz-dashboard" class="biz-panel active">
+        <!-- Subscription card -->
+        <div class="sub-card" id="sub-card">
+          <div class="sub-card-top">
+            <div>
+              <div class="sub-label" id="sub-status-label">Free trial</div>
+              <div class="sub-title" id="sub-status-title">1 deal free · then up to 10 / month</div>
+            </div>
+            <div class="sub-price">GYD 5,000<span>/mo</span></div>
+          </div>
+          <p class="sub-desc" id="sub-desc">
+            Free plan: post <strong>1 deal</strong> and use the full portal for <strong>1 month</strong>.
+            Paid plan: <strong>GYD 5,000/mo</strong> via MMG — up to <strong>10 deals</strong>, plus orders & settlements.
+          </p>
+          <div class="sub-meta" id="sub-meta">Trial ends in 30 days · Deals used: 0 / 1</div>
+          <button class="primary-btn" id="sub-pay-btn" onclick="openSubscriptionPay()">
+            Pay GYD 5,000 via MMG
+          </button>
+          <p class="sub-mmg-note">MMG payments go to <strong>6124940</strong></p>
+        </div>
+
+
+        <!-- Business logo -->
+        <div class="logo-card" id="biz-logo-card">
+          <div class="logo-card-row">
+            <div class="biz-logo-preview" id="biz-logo-preview">🏪</div>
+            <div style="flex:1">
+              <strong>Business logo</strong>
+              <p class="small" style="margin:4px 0 8px">Shown next to your products in the customer app</p>
+              <label class="primary-btn small" style="display:inline-block;cursor:pointer">
+                Upload logo
+                <input type="file" id="biz-logo-input" accept="image/*" hidden onchange="uploadBusinessLogo(event)">
+              </label>
+              <button type="button" class="primary-btn small" style="margin-left:6px;background:#6b7280;color:#fff" onclick="clearBusinessLogo()">Remove</button>
+            </div>
+          </div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">This Week Sales</span>
+            <span class="stat-value">GYD 142,900</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Orders</span>
+            <span class="stat-value">34</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Active Deals</span>
+            <span class="stat-value" id="biz-active-deals-count">6</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Net Payout</span>
+            <span class="stat-value highlight">GYD 114,626</span>
+          </div>
+        </div>
+        <h3>Recent Activity</h3>
+        <div class="activity-list">
+          <div class="activity-item">🛒 New delivery order – Pepperpot Combo – GYD 4,800</div>
+          <div class="activity-item">⭐ 5-star review from Maria S.</div>
+          <div class="activity-item">📦 Order #8821 ready for rider pickup</div>
+          <div class="activity-item">💰 Weekly settlement processed</div>
+        </div>
+      </div>
+
+      <!-- My Deals -->
+      <div id="biz-deals" class="biz-panel">
+        <div class="panel-header">
+          <h3>Active Deals</h3>
+          <button class="primary-btn small" onclick="openNewDealModal()">+ New Deal</button>
+        </div>
+        <div class="biz-deal-list" id="biz-deal-list"></div>
+      </div>
+
+
+      <!-- Promote / Business Ads -->
+      <div id="biz-promote" class="biz-panel">
+        <div class="panel-header">
+          <h3>Promote your business</h3>
+          <button class="primary-btn small" onclick="openBizAdComposer()">+ Create Ad</button>
+        </div>
+        <p class="small" style="margin-bottom:12px">
+          Run an ad on the customer app &amp; login screen.
+          <strong>GYD 1,000 / day</strong> or <strong>GYD 5,000 / week</strong> —
+          pay via MMG to <strong>6124940</strong> before publishing.
+        </p>
+        <div id="biz-ad-list"></div>
+      </div>
+
+      <!-- Orders -->
+      <div id="biz-orders" class="biz-panel">
+        <h3>Incoming Orders</h3>
+        <div class="order-list" id="biz-order-list"></div>
+      </div>
+
+      <!-- Settlement -->
+      <div id="biz-settlement" class="biz-panel">
+        <h3>Weekly Settlement</h3>
+        <div class="settlement-card">
+          <div class="settle-header">
+            <span>21–27 July 2026</span>
+            <span class="status paid">Processing</span>
+          </div>
+          <div class="settle-row"><span>Gross Sales</span><strong>GYD 142,900</strong></div>
+          <div class="settle-row"><span>Platform Commission (7%)</span><span class="neg">– GYD 8,947</span></div>
+          <div class="settle-row"><span>Free Delivery Subsidy</span><span class="neg">– GYD 6,050</span></div>
+          <div class="settle-row"><span>Subscription (weekly)</span><span class="neg">– GYD 2,375</span></div>
+          <div class="settle-row"><span>Processing & COD fees</span><span class="neg">– GYD 1,955</span></div>
+          <div class="settle-total">
+            <span>Amount Due</span>
+            <strong>GYD 114,626</strong>
+          </div>
+          <div class="deduction-visual">
+            <div class="bar-seg" style="width:46.3%;background:#e74c3c" title="Commission 46.3%"></div>
+            <div class="bar-seg" style="width:31.3%;background:#f39c12" title="Free Delivery 31.3%"></div>
+            <div class="bar-seg" style="width:12.3%;background:#3498db" title="Subscription 12.3%"></div>
+            <div class="bar-seg" style="width:6.6%;background:#9b59b6" title="Processing 6.6%"></div>
+            <div class="bar-seg" style="width:3.5%;background:#1abc9c" title="COD 3.5%"></div>
+          </div>
+          <div class="legend">
+            <span><i style="background:#e74c3c"></i> Commission</span>
+            <span><i style="background:#f39c12"></i> Free Delivery</span>
+            <span><i style="background:#3498db"></i> Subscription</span>
+            <span><i style="background:#9b59b6"></i> Processing</span>
+            <span><i style="background:#1abc9c"></i> COD</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ==================== DELIVERY PARTNER ==================== -->
+  <div id="delivery-app" class="screen">
+    <header class="app-header delivery-header">
+      <button class="back-btn" onclick="switchRole('selector')">←</button>
+      <div class="header-center">
+        <span class="app-name">Rider App</span>
+        <span class="location" id="rider-loc-label">Online • Georgetown</span>
+      </div>
+      <span class="earnings-badge">GYD 18,400</span>
+    </header>
+
+    <div class="rider-status">
+      <label class="toggle">
+        <input type="checkbox" id="online-toggle" checked onchange="toggleOnline(this)">
+        <span class="toggle-slider"></span>
+        <span class="toggle-label" id="online-label">You’re Online</span>
+      </label>
+      <div class="live-loc-row">
+        <span class="live-dot"></span>
+        <span>Live location sharing: <strong id="loc-status">On</strong></span>
+      </div>
+    </div>
+
+    <main class="rider-content">
+      <h3>Available Orders</h3>
+      <div id="rider-orders" class="rider-order-list"></div>
+      <h3>Active Delivery</h3>
+      <div id="active-delivery" class="active-card empty">
+        <p>No active delivery</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- ==================== MANAGER PORTAL ==================== -->
+  <div id="manager-app" class="screen">
+    <header class="app-header manager-header">
+      <button class="back-btn" onclick="logout()">←</button>
+      <div class="header-center">
+        <span class="app-name">Manager Portal</span>
+        <span class="location" id="mgr-user-label">Admin</span>
+      </div>
+      <button class="primary-btn small mgr-save-btn" onclick="saveAllManagerChanges()" title="Save all changes">💾 Save</button>
+    </header>
+
+    <div class="biz-tabs mgr-tabs">
+      <button class="biz-tab active" data-mgr="overview" onclick="showMgrTab('overview')">Overview</button>
+      <button class="biz-tab" data-mgr="ads" onclick="showMgrTab('ads')">Ads</button>
+      <button class="biz-tab" data-mgr="businesses" onclick="showMgrTab('businesses')">Business</button>
+      <button class="biz-tab" data-mgr="customers" onclick="showMgrTab('customers')">Customers</button>
+      <button class="biz-tab" data-mgr="riders" onclick="showMgrTab('riders')">Riders</button>
+    </div>
+
+    <main class="biz-content">
+      <div id="mgr-overview" class="biz-panel active">
+        <div class="revenue-card" id="mgr-revenue">
+          <div class="sub-label">Platform income</div>
+          <div class="sub-title">Subscriptions + Ads</div>
+          <div class="revenue-grid">
+            <div><div class="lbl">Subscriptions</div><div class="val" id="mgr-rev-sub">GYD 0</div></div>
+            <div><div class="lbl">Ads</div><div class="val" id="mgr-rev-ads">GYD 0</div></div>
+            <div><div class="lbl">Total</div><div class="val" id="mgr-rev-total">GYD 0</div></div>
+            <div><div class="lbl">MMG</div><div class="val" style="font-size:14px">6124940</div></div>
+          </div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card"><span class="stat-label">Businesses</span><span class="stat-value" id="mgr-stat-biz">0</span></div>
+          <div class="stat-card"><span class="stat-label">Customers</span><span class="stat-value" id="mgr-stat-cust">0</span></div>
+          <div class="stat-card"><span class="stat-label">Riders</span><span class="stat-value" id="mgr-stat-riders">0</span></div>
+          <div class="stat-card"><span class="stat-label">Active Ads</span><span class="stat-value" id="mgr-stat-ads">0</span></div>
+          <div class="stat-card"><span class="stat-label">Live Deals</span><span class="stat-value" id="mgr-stat-deals">0</span></div>
+          <div class="stat-card"><span class="stat-label">Orders</span><span class="stat-value" id="mgr-stat-orders">0</span></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 8px">
+          <h3 style="margin:0">Live app snapshot</h3>
+          <button class="primary-btn small" onclick="saveAllManagerChanges()">💾 Save changes</button>
+        </div>
+        <p class="small" style="margin-bottom:10px">Data below mirrors the current app (deals, users, ads, revenue). Edit in the tabs, then tap <strong>Save</strong>.</p>
+        <div id="mgr-live-snapshot" class="activity-list"></div>
+        <h3 style="margin-top:16px">Customer deals feed</h3>
+        <div id="mgr-deals-snapshot"></div>
+      </div>
+
+      <div id="mgr-ads" class="biz-panel">
+        <div class="panel-header">
+          <h3>Advert banners</h3>
+          <button class="primary-btn small" onclick="openMgrAdForm()">+ New Ad</button>
+        </div>
+        <div id="mgr-ad-list"></div>
+      </div>
+
+      <div id="mgr-businesses" class="biz-panel">
+        <div class="panel-header">
+          <h3>Businesses</h3>
+          <button class="primary-btn small" onclick="openMgrUserForm('business')">+ Add</button>
+        </div>
+        <div id="mgr-biz-list"></div>
+      </div>
+
+      <div id="mgr-customers" class="biz-panel">
+        <div class="panel-header">
+          <h3>Customers</h3>
+          <button class="primary-btn small" onclick="openMgrUserForm('customer')">+ Add</button>
+        </div>
+        <div id="mgr-cust-list"></div>
+      </div>
+
+      <div id="mgr-riders" class="biz-panel">
+        <div class="panel-header">
+          <h3>Riders</h3>
+          <button class="primary-btn small" onclick="openMgrUserForm('delivery')">+ Add</button>
+        </div>
+        <div id="mgr-rider-list"></div>
+      </div>
+    </main>
+  </div>
+
+
+  <!-- Business Ad Composer -->
+  <div id="biz-ad-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Create promotional ad</h2>
+      <form onsubmit="return submitBizAd(event)">
+        <div class="form-group">
+          <label>Ad headline</label>
+          <input type="text" id="biz-ad-headline" required placeholder="e.g. Weekend Pepperpot – 26% off">
+        </div>
+        <div class="form-group">
+          <label>Subtext</label>
+          <input type="text" id="biz-ad-sub" placeholder="Short line for shoppers">
+        </div>
+        <div class="form-group">
+          <label>Placement</label>
+          <select id="biz-ad-place">
+            <option value="customer">Customer home</option>
+            <option value="login">Login screen</option>
+            <option value="both">Both</option>
+          </select>
+        </div>
+        <label>Duration & price</label>
+        <div class="ad-price-options">
+          <div class="ad-price-opt selected" data-plan="day" onclick="selectAdPlan(this)">
+            <strong>GYD 1,000</strong>
+            <span>1 day</span>
+          </div>
+          <div class="ad-price-opt" data-plan="week" onclick="selectAdPlan(this)">
+            <strong>GYD 5,000</strong>
+            <span>7 days</span>
+          </div>
+        </div>
+        <div class="mmg-pay-box">
+          <div class="mmg-label">Pay via MMG to</div>
+          <div class="mmg-number">6124940</div>
+          <div class="mmg-amount">Amount: <strong id="biz-ad-amount">GYD 1,000</strong></div>
+        </div>
+        <div class="form-group">
+          <label>Your MMG phone</label>
+          <input type="tel" id="biz-ad-mmg" placeholder="592-6XX-XXXX" required>
+        </div>
+        <div class="form-group">
+          <label>MMG transaction ID</label>
+          <input type="text" id="biz-ad-txid" placeholder="e.g. MMG-12345678" required>
+        </div>
+        <button type="submit" class="primary-btn">I’ve paid — Publish Ad</button>
+      </form>
+    </div>
+  </div>
+  <!-- Manager Ad form modal -->
+  <div id="mgr-ad-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2 id="mgr-ad-title">New Ad</h2>
+      <form onsubmit="return saveMgrAd(event)">
+        <input type="hidden" id="mgr-ad-id" value="">
+        <div class="form-group">
+          <label>Headline</label>
+          <input type="text" id="mgr-ad-headline" required placeholder="e.g. Promote your business here">
+        </div>
+        <div class="form-group">
+          <label>Subtext</label>
+          <input type="text" id="mgr-ad-sub" placeholder="Short supporting line">
+        </div>
+        <div class="form-group">
+          <label>Placement</label>
+          <select id="mgr-ad-place">
+            <option value="both">Login + Customer</option>
+            <option value="login">Login only</option>
+            <option value="customer">Customer only</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Status</label>
+          <select id="mgr-ad-status">
+            <option value="Active">Active</option>
+            <option value="Paused">Paused</option>
+          </select>
+        </div>
+        <button type="submit" class="primary-btn" id="mgr-ad-save">Save Ad</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Manager User form modal -->
+  <div id="mgr-user-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2 id="mgr-user-title">Add user</h2>
+      <form onsubmit="return saveMgrUser(event)">
+        <input type="hidden" id="mgr-user-id" value="">
+        <input type="hidden" id="mgr-user-role" value="customer">
+        <div class="form-group">
+          <label>Full name</label>
+          <input type="text" id="mgr-user-name" required>
+        </div>
+        <div class="form-group">
+          <label>Phone or email</label>
+          <input type="text" id="mgr-user-identifier" required>
+        </div>
+        <div class="form-group" id="mgr-user-biz-group" style="display:none">
+          <label>Business name</label>
+          <input type="text" id="mgr-user-business">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="text" id="mgr-user-password" placeholder="Leave blank to keep existing" value="giftshop">
+        </div>
+        <button type="submit" class="primary-btn" id="mgr-user-save">Save</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
