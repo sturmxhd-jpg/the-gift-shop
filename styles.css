@@ -74,7 +74,7 @@ h1, h2, h3, .app-name {
 .tagline {
   opacity: 0.9;
   font-size: 16px;
-  margin-bottom: 32px;
+  margin-bottom: 12px;
 }
 
 .launcher-sub {
@@ -2160,3 +2160,220 @@ label.primary-btn,
   transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease,
     transform 0.12s ease, border-color 0.15s ease, filter 0.15s ease;
 }
+
+/* Inline Guyana flag SVG (no image file needed) */
+.gy-flag-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+.gy-flag-sm {
+  display: inline-flex;
+  width: 36px;
+  height: 22px;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  flex-shrink: 0;
+}
+.gy-flag-avatar {
+  display: flex;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+.gy-flag-avatar .gy-flag-svg {
+  /* crop flag into square-ish avatar area */
+  object-fit: cover;
+  transform: scale(1.4);
+  transform-origin: center left;
+}
+.gy-flag-lg {
+  display: block;
+  width: 100%;
+  max-width: 280px;
+  height: auto;
+  aspect-ratio: 5 / 3;
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 8px auto;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+}
+
+
+/* ===== Guyana flag images (PNG) ===== */
+img.gy-flag-sm {
+  display: inline-block !important;
+  width: 40px !important;
+  height: 24px !important;
+  object-fit: cover;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+img.gy-flag-avatar {
+  display: block !important;
+  width: 56px !important;
+  height: 56px !important;
+  object-fit: cover;
+  border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+img.gy-flag-lg {
+  display: block !important;
+  width: 100% !important;
+  max-width: 280px;
+  height: auto !important;
+  aspect-ratio: 5 / 3;
+  object-fit: cover;
+  border-radius: 12px;
+  margin: 8px auto;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+}
+.profile-avatar {
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+}
+
+/* FLAG VISIBILITY FIX */
+.logo-area .guyana-badge {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 10px;
+  margin: 12px auto 20px;
+  background: rgba(255,255,255,0.2);
+  border: 1px solid rgba(255,255,255,0.4);
+  padding: 8px 16px;
+  border-radius: 24px;
+}
+.logo-area .gy-flag-sm,
+.logo-area img.gy-flag-sm {
+  width: 44px !important;
+  height: 28px !important;
+  object-fit: cover !important;
+  border-radius: 3px !important;
+  display: inline-block !important;
+  background: #009E49;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+}
+.login-header img.gy-flag-sm {
+  width: 48px !important;
+  height: 30px !important;
+  object-fit: cover !important;
+  display: block !important;
+  margin: 0 auto 8px;
+  border-radius: 4px;
+}
+
+/* FLAG ALWAYS VISIBLE */
+img.gy-flag-sm,
+img.gy-flag-avatar,
+img.gy-flag-lg {
+  opacity: 1 !important;
+  visibility: visible !important;
+  max-width: none;
+}
+
+/* Live delivery tracking */
+.track-live-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+  margin: 8px 0 12px;
+}
+.tracking-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.status-step {
+  flex: 1;
+  min-width: 70px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 6px 4px;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #9ca3af;
+}
+.status-step.active {
+  background: #059669;
+  color: #fff !important;
+}
+.status-step.current {
+  background: #fcd116;
+  color: #14532d !important;
+  box-shadow: 0 0 0 2px rgba(252, 209, 22, 0.4);
+}
+
+.orders-panel {
+  padding: 16px;
+  padding-bottom: 100px;
+}
+.orders-panel.hidden { display: none !important; }
+.orders-header h3 { margin-bottom: 4px; }
+.orders-header .small { color: var(--muted); margin-bottom: 14px; }
+
+.order-live-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow);
+}
+.order-live-card h4 { margin: 0 0 4px; font-size: 15px; }
+.order-live-card .meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.order-status-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: #ecfdf5;
+  color: #047857;
+  margin-bottom: 10px;
+}
+.order-status-pill.waiting { background: #fef3c7; color: #92400e; }
+.order-status-pill.delivered { background: #e5e7eb; color: #374151; }
+.order-live-card .primary-btn {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.live-track-banner {
+  position: fixed;
+  bottom: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 32px);
+  max-width: 448px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #0f5132, #1a7a4c);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(15, 81, 50, 0.35);
+  cursor: pointer;
+}
+.live-track-banner.hidden { display: none !important; }
+.live-track-banner .banner-arrow { margin-left: auto; font-size: 16px; }

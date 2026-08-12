@@ -138,6 +138,16 @@ const deals = [
   }
 ];
 
+// Customer live delivery tracking
+let customerLiveOrders = [];
+try {
+  const clo = localStorage.getItem('tgs_live_orders');
+  if (clo) customerLiveOrders = JSON.parse(clo);
+} catch (_) {}
+function saveLiveOrders() {
+  try { localStorage.setItem('tgs_live_orders', JSON.stringify(customerLiveOrders)); } catch (_) {}
+}
+
 const businessDeals = [
   { id: "BD1", title: "Pepperpot + Rice Combo", price: 4800, original: 6500, status: "Active", redemptions: 23, photo: null, emoji: "🍲", description: "Authentic pepperpot", category: "food", daysLeft: 5 },
   { id: "BD2", title: "Friday Fish Fry Special", price: 3500, original: 4500, status: "Active", redemptions: 11, photo: null, emoji: "🐟", description: "Crispy fried fish", category: "food", daysLeft: 3 },
@@ -454,6 +464,8 @@ function enterApp(role) {
     if (typeof renderDeals === "function") renderDeals();
     applyPlatformAds();
     updateHeaderUser();
+    if (typeof updateLiveTrackBanner === "function") updateLiveTrackBanner();
+    if (typeof renderCustomerOrders === "function") renderCustomerOrders();
   } else if (role === "business") {
     document.getElementById("business-app").classList.add("active");
     if (typeof renderBusiness === "function") renderBusiness();
@@ -684,6 +696,18 @@ function placeOrder() {
     }
     // Store for tracking screen
     window.lastDelivery = { address: addr, phone: phone };
+    if (typeof createLiveOrder === 'function' && isDelivery) {
+      const totalEl = document.getElementById('cart-total');
+      const totalTxt = totalEl ? totalEl.textContent.replace(/[^0-9]/g, '') : '0';
+      const live = createLiveOrder({
+        item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
+        total: parseInt(totalTxt, 10) || 0,
+        address: addr,
+        phone: phone
+      });
+      window.activeTrackOrderId = live.id;
+      window.lastDelivery.orderId = live.id;
+    }
   }
   
   cart = [];
@@ -1562,6 +1586,14 @@ function acceptOrder(id) {
   }
 
   showToast('Order accepted • Live GPS sharing started 📍');
+  // Update customer live delivery status
+  if (typeof notifyCustomerRiderAccepted === 'function') {
+    notifyCustomerRiderAccepted(order.id, {
+      name: (currentUser && currentUser.name) || 'Marcus D.',
+      phone: (currentUser && currentUser.phone) || '592-671-8801',
+      rating: 4.9
+    });
+  }
 }
 
 
@@ -1706,6 +1738,18 @@ placeOrder = function() {
       return;
     }
     window.lastDelivery = { address: addr, phone: phone };
+    if (typeof createLiveOrder === 'function' && isDelivery) {
+      const totalEl = document.getElementById('cart-total');
+      const totalTxt = totalEl ? totalEl.textContent.replace(/[^0-9]/g, '') : '0';
+      const live = createLiveOrder({
+        item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
+        total: parseInt(totalTxt, 10) || 0,
+        address: addr,
+        phone: phone
+      });
+      window.activeTrackOrderId = live.id;
+      window.lastDelivery.orderId = live.id;
+    }
     // Use a Georgetown destination near the sample points
     activeOrderDest = { lat: 6.812, lng: -58.155 };
   }
@@ -1756,18 +1800,34 @@ function showCustomerTab(tab) {
   const search = document.querySelector('.search-bar');
   const profile = document.getElementById('profile-panel');
 
+  const ordersPanel = document.getElementById('orders-panel');
+  const adBanner = document.getElementById('customer-ad-banner');
+
   if (tab === 'profile') {
     if (feed) feed.classList.add('hidden');
     if (cats) cats.classList.add('hidden');
     if (search) search.classList.add('hidden');
+    if (ordersPanel) ordersPanel.classList.add('hidden');
+    if (adBanner) adBanner.classList.add('hidden');
     if (profile) profile.classList.remove('hidden');
+  } else if (tab === 'orders') {
+    if (feed) feed.classList.add('hidden');
+    if (cats) cats.classList.add('hidden');
+    if (search) search.classList.add('hidden');
+    if (profile) profile.classList.add('hidden');
+    if (adBanner) adBanner.classList.add('hidden');
+    if (ordersPanel) ordersPanel.classList.remove('hidden');
+    renderCustomerOrders();
+    updateLiveTrackBanner();
   } else {
     if (feed) feed.classList.remove('hidden');
     if (cats) cats.classList.remove('hidden');
     if (search) search.classList.remove('hidden');
     if (profile) profile.classList.add('hidden');
-    if (tab === 'orders' || tab === 'saved') {
-      showToast(tab === 'orders' ? 'Orders coming soon' : 'Saved deals coming soon');
+    if (ordersPanel) ordersPanel.classList.add('hidden');
+    if (adBanner) adBanner.classList.remove('hidden');
+    if (tab === 'saved') {
+      showToast('Saved deals coming soon');
     }
   }
 }
@@ -1815,6 +1875,18 @@ placeOrder = function() {
       return;
     }
     window.lastDelivery = { address: addr, phone: phone };
+    if (typeof createLiveOrder === 'function' && isDelivery) {
+      const totalEl = document.getElementById('cart-total');
+      const totalTxt = totalEl ? totalEl.textContent.replace(/[^0-9]/g, '') : '0';
+      const live = createLiveOrder({
+        item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
+        total: parseInt(totalTxt, 10) || 0,
+        address: addr,
+        phone: phone
+      });
+      window.activeTrackOrderId = live.id;
+      window.lastDelivery.orderId = live.id;
+    }
     activeOrderDest = { lat: 6.812, lng: -58.155 };
   }
 
@@ -1906,6 +1978,12 @@ function openTrackingWithRider(address, customerPhone) {
   setTrackingRider();
   if (address) document.getElementById('track-address').textContent = address;
   if (customerPhone) document.getElementById('track-phone').textContent = 'Your contact: ' + customerPhone;
+  // Live status steps from active order if available
+  const live = (typeof getActiveLiveOrder === 'function' && getActiveLiveOrder()) ||
+    (window.activeTrackOrderId && customerLiveOrders.find(o => o.id === window.activeTrackOrderId));
+  if (typeof setTrackStatusSteps === 'function') {
+    setTrackStatusSteps(live ? live.status : 'confirmed');
+  }
   document.getElementById('tracking-modal')?.classList.add('active');
   currentRiderPos = { lat: 6.8013, lng: -58.1551 };
   activeOrderDest = activeOrderDest || { lat: 6.812, lng: -58.155 };
@@ -1992,6 +2070,8 @@ function submitRiderRating() {
 
 /** Demo helper: mark current tracked order as delivered so rating appears */
 function markOrderDeliveredForRating() {
+  if (typeof notifyCustomerDelivered === 'function') notifyCustomerDelivered();
+
   if (typeof stopRiderGPS === 'function') stopRiderGPS();
   showRiderRatingUI();
   showToast('Order delivered — please rate your rider');
@@ -2404,4 +2484,158 @@ function pauseBizAd(id) {
 
 
 
+
+
+
+// ===== LIVE DELIVERY STATUS (customer) =====
+const DELIVERY_STEPS = ['confirmed', 'preparing', 'accepted', 'on_the_way', 'delivered'];
+const STEP_LABELS = {
+  confirmed: 'Order confirmed',
+  preparing: 'Business is preparing',
+  accepted: 'Rider accepted your order',
+  on_the_way: 'Rider is on the way',
+  delivered: 'Delivered'
+};
+
+function setTrackStatusSteps(step) {
+  const idx = DELIVERY_STEPS.indexOf(step);
+  const steps = document.querySelectorAll('#track-status-steps .status-step');
+  steps.forEach((el, i) => {
+    el.classList.remove('active', 'current');
+    if (i < idx) el.classList.add('active');
+    else if (i === idx) el.classList.add('active', 'current');
+  });
+  const text = document.getElementById('track-status-text');
+  if (text) text.textContent = STEP_LABELS[step] || step;
+}
+
+function createLiveOrder(payload) {
+  const id = 'ORD-' + Date.now().toString(36).toUpperCase();
+  const order = {
+    id,
+    item: payload.item || 'Your order',
+    total: payload.total || 0,
+    address: payload.address || '',
+    phone: payload.phone || '',
+    status: 'confirmed', // confirmed | preparing | accepted | on_the_way | delivered
+    rider: null,
+    createdAt: new Date().toISOString()
+  };
+  customerLiveOrders.unshift(order);
+  saveLiveOrders();
+  // Simulate business preparing after a few seconds
+  setTimeout(() => {
+    updateLiveOrderStatus(id, 'preparing');
+  }, 4000);
+  updateLiveTrackBanner();
+  renderCustomerOrders();
+  return order;
+}
+
+function updateLiveOrderStatus(id, status, extra) {
+  const o = customerLiveOrders.find(x => x.id === id);
+  if (!o) return;
+  o.status = status;
+  if (extra) Object.assign(o, extra);
+  saveLiveOrders();
+  updateLiveTrackBanner();
+  renderCustomerOrders();
+  // Refresh tracking modal if open for this order
+  if (window.activeTrackOrderId === id && document.getElementById('tracking-modal')?.classList.contains('active')) {
+    setTrackStatusSteps(status);
+    if (o.rider) setTrackingRider(o.rider);
+  }
+}
+
+function getActiveLiveOrder() {
+  return customerLiveOrders.find(o => o.status !== 'delivered') || null;
+}
+
+function updateLiveTrackBanner() {
+  const banner = document.getElementById('live-track-banner');
+  const text = document.getElementById('live-track-banner-text');
+  const active = getActiveLiveOrder();
+  if (!banner) return;
+  if (!active) {
+    banner.classList.add('hidden');
+    return;
+  }
+  banner.classList.remove('hidden');
+  const msg = {
+    confirmed: 'Order confirmed — waiting for kitchen…',
+    preparing: 'Being prepared — waiting for a rider…',
+    accepted: 'Rider accepted — tap to track live',
+    on_the_way: 'Rider on the way — tap for live map'
+  };
+  if (text) text.textContent = msg[active.status] || 'Live delivery — tap to track';
+}
+
+function renderCustomerOrders() {
+  const list = document.getElementById('orders-list');
+  if (!list) return;
+  if (!customerLiveOrders.length) {
+    list.innerHTML = '<p class="small" style="text-align:center;padding:24px;color:var(--muted)">No orders yet. Place a delivery order to track it live here.</p>';
+    return;
+  }
+  list.innerHTML = customerLiveOrders.map(o => {
+    const pillClass = o.status === 'delivered' ? 'delivered' : (o.status === 'confirmed' || o.status === 'preparing' ? 'waiting' : '');
+    const label = STEP_LABELS[o.status] || o.status;
+    const canTrack = o.status !== 'delivered';
+    return `
+      <div class="order-live-card">
+        <div class="order-status-pill ${pillClass}">${label}</div>
+        <h4>${o.item}</h4>
+        <div class="meta">${o.id} · GYD ${(o.total || 0).toLocaleString()}</div>
+        <div class="meta">📍 ${o.address || '—'}</div>
+        ${o.rider ? `<div class="meta">🛵 Rider: ${o.rider.name || 'Rider'} · ${o.rider.phone || ''}</div>` : ''}
+        ${canTrack ? `<button type="button" class="primary-btn" onclick="openTrackingForOrder('${o.id}')">📍 Track live delivery</button>` : '<span class="small">Completed</span>'}
+      </div>
+    `;
+  }).join('');
+}
+
+function openTrackingForOrder(id) {
+  const o = customerLiveOrders.find(x => x.id === id);
+  if (!o) return;
+  window.activeTrackOrderId = id;
+  window.lastDelivery = { address: o.address, phone: o.phone, orderId: id };
+  openTrackingWithRider(o.address, o.phone);
+  setTrackStatusSteps(o.status);
+  if (o.rider) setTrackingRider(o.rider);
+  // If accepted or on the way, ensure map starts
+  if (['accepted', 'on_the_way'].includes(o.status)) {
+    setTimeout(() => {
+      if (typeof initCustomerMap === 'function') initCustomerMap();
+      else if (typeof startCustomerTracking === 'function') startCustomerTracking();
+    }, 300);
+  }
+}
+
+function openActiveTracking() {
+  const o = getActiveLiveOrder();
+  if (o) openTrackingForOrder(o.id);
+  else showToast('No active delivery right now');
+}
+
+// When rider accepts, advance customer live status
+function notifyCustomerRiderAccepted(orderId, riderInfo) {
+  // Match by any active order if ids differ in demo
+  let o = orderId ? customerLiveOrders.find(x => x.id === orderId) : null;
+  if (!o) o = getActiveLiveOrder();
+  if (!o) return;
+  o.rider = riderInfo || {
+    name: (typeof Riders !== 'undefined' && Riders[0]) ? Riders[0].name : 'Marcus D.',
+    phone: (typeof Riders !== 'undefined' && Riders[0]) ? Riders[0].phone : '592-671-8801',
+    rating: 4.9
+  };
+  updateLiveOrderStatus(o.id, 'accepted', { rider: o.rider });
+  setTimeout(() => updateLiveOrderStatus(o.id, 'on_the_way'), 2500);
+  showToast('🛵 Rider accepted your order — track live in Orders');
+}
+
+function notifyCustomerDelivered(orderId) {
+  let o = orderId ? customerLiveOrders.find(x => x.id === orderId) : getActiveLiveOrder();
+  if (!o) return;
+  updateLiveOrderStatus(o.id, 'delivered');
+}
 
