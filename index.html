@@ -586,27 +586,24 @@
         <div class="stats-grid">
           <div class="stat-card">
             <span class="stat-label">This Week Sales</span>
-            <span class="stat-value">GYD 142,900</span>
+            <span class="stat-value" id="biz-week-sales">GYD 0</span>
           </div>
           <div class="stat-card">
             <span class="stat-label">Orders</span>
-            <span class="stat-value">34</span>
+            <span class="stat-value" id="biz-order-count">0</span>
           </div>
           <div class="stat-card">
             <span class="stat-label">Active Deals</span>
-            <span class="stat-value" id="biz-active-deals-count">6</span>
+            <span class="stat-value" id="biz-active-deals-count">0</span>
           </div>
           <div class="stat-card">
             <span class="stat-label">Net Payout</span>
-            <span class="stat-value highlight">GYD 114,626</span>
+            <span class="stat-value highlight" id="biz-net-payout">GYD 0</span>
           </div>
         </div>
         <h3>Recent Activity</h3>
-        <div class="activity-list">
-          <div class="activity-item">🛒 New delivery order – Pepperpot Combo – GYD 4,800</div>
-          <div class="activity-item">⭐ 5-star review from Maria S.</div>
-          <div class="activity-item">📦 Order #8821 ready for rider pickup</div>
-          <div class="activity-item">💰 Weekly settlement processed</div>
+        <div class="activity-list" id="biz-activity-list">
+          <div class="activity-item">No activity yet — orders and reviews will show here.</div>
         </div>
       </div>
 
@@ -643,34 +640,20 @@
       <!-- Settlement -->
       <div id="biz-settlement" class="biz-panel">
         <h3>Weekly Settlement</h3>
-        <div class="settlement-card">
+        <div class="settlement-card" id="biz-settlement-card">
           <div class="settle-header">
-            <span>21–27 July 2026</span>
-            <span class="status paid">Processing</span>
+            <span>This week</span>
+            <span class="status paid">No sales yet</span>
           </div>
-          <div class="settle-row"><span>Gross Sales</span><strong>GYD 142,900</strong></div>
-          <div class="settle-row"><span>Platform Commission (7%)</span><span class="neg">– GYD 8,947</span></div>
-          <div class="settle-row"><span>Free Delivery Subsidy</span><span class="neg">– GYD 6,050</span></div>
-          <div class="settle-row"><span>Subscription (weekly)</span><span class="neg">– GYD 2,375</span></div>
-          <div class="settle-row"><span>Processing & COD fees</span><span class="neg">– GYD 1,955</span></div>
+          <div class="settle-row"><span>Gross Sales</span><strong id="settle-gross">GYD 0</strong></div>
+          <div class="settle-row"><span>Platform Commission (7%)</span><span class="neg" id="settle-comm">– GYD 0</span></div>
+          <div class="settle-row"><span>Delivery fees</span><span class="neg" id="settle-del">– GYD 0</span></div>
+          <div class="settle-row"><span>Other fees</span><span class="neg" id="settle-fees">– GYD 0</span></div>
           <div class="settle-total">
             <span>Amount Due</span>
-            <strong>GYD 114,626</strong>
+            <strong id="settle-net">GYD 0</strong>
           </div>
-          <div class="deduction-visual">
-            <div class="bar-seg" style="width:46.3%;background:#e74c3c" title="Commission 46.3%"></div>
-            <div class="bar-seg" style="width:31.3%;background:#f39c12" title="Free Delivery 31.3%"></div>
-            <div class="bar-seg" style="width:12.3%;background:#3498db" title="Subscription 12.3%"></div>
-            <div class="bar-seg" style="width:6.6%;background:#9b59b6" title="Processing 6.6%"></div>
-            <div class="bar-seg" style="width:3.5%;background:#1abc9c" title="COD 3.5%"></div>
-          </div>
-          <div class="legend">
-            <span><i style="background:#e74c3c"></i> Commission</span>
-            <span><i style="background:#f39c12"></i> Free Delivery</span>
-            <span><i style="background:#3498db"></i> Subscription</span>
-            <span><i style="background:#9b59b6"></i> Processing</span>
-            <span><i style="background:#1abc9c"></i> COD</span>
-          </div>
+          <p class="small" style="margin-top:10px;color:var(--muted)">Settlement fills in when real orders are completed.</p>
         </div>
       </div>
     </main>
@@ -684,7 +667,7 @@
         <span class="app-name">Rider App</span>
         <span class="location" id="rider-loc-label">Online • Georgetown</span>
       </div>
-      <span class="earnings-badge">GYD 18,400</span>
+      <span class="earnings-badge" id="rider-earnings">GYD 0</span>
     </header>
 
     <div class="rider-status">

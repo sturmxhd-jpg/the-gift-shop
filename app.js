@@ -94,6 +94,19 @@ function loginLocalUser(identifier, password, role) {
 
 // ===== SAMPLE DATA =====
 let deals = []; // Live deals only — posted by real businesses
+function saveLiveDeals() {
+  try { localStorage.setItem('tgs_live_deals', JSON.stringify(deals)); } catch (_) {}
+}
+function loadLiveDeals() {
+  try {
+    const raw = localStorage.getItem('tgs_live_deals');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) deals = parsed;
+    }
+  } catch (_) {}
+}
+loadLiveDeals();
 // One-time purge of old demo data cached in the browser
 try {
   if (!localStorage.getItem('tgs_clean_v1')) {
@@ -121,6 +134,19 @@ function saveLiveOrders() {
 }
 
 let businessDeals = []; // Business posts only their own deals
+function saveBusinessDeals() {
+  try { localStorage.setItem('tgs_biz_deals', JSON.stringify(businessDeals)); } catch (_) {}
+}
+function loadBusinessDeals() {
+  try {
+    const raw = localStorage.getItem('tgs_biz_deals');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) businessDeals = parsed;
+    }
+  } catch (_) {}
+}
+loadBusinessDeals();
 
 let pendingDealPhoto = null; // data URL for new/edit deal photo
 let editingDealId = null;
@@ -595,7 +621,11 @@ function enterApp(role) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   if (role === "customer") {
     document.getElementById("customer-app").classList.add("active");
-    if (typeof renderDeals === "function") renderDeals();
+    if (typeof refreshDealsFromServer === "function") {
+      refreshDealsFromServer().then(() => {
+        if (typeof renderDeals === "function") renderDeals();
+      });
+    } else if (typeof renderDeals === "function") renderDeals();
     applyPlatformAds();
     updateHeaderUser();
     if (typeof updateLiveTrackBanner === "function") updateLiveTrackBanner();
@@ -932,7 +962,24 @@ function saveSubscription(s) {
 }
 
 let bizSubscription = loadSubscription();
-const SETTLEMENT_HTML = "\n        <h3>Weekly Settlement</h3>\n        <div class=\"settlement-card\">\n          <div class=\"settle-header\">\n            <span>21\u201327 July 2026</span>\n            <span class=\"status paid\">Processing</span>\n          </div>\n          <div class=\"settle-row\"><span>Gross Sales</span><strong>GYD 142,900</strong></div>\n          <div class=\"settle-row\"><span>Platform Commission (7%)</span><span class=\"neg\">\u2013 GYD 8,947</span></div>\n          <div class=\"settle-row\"><span>Free Delivery Subsidy</span><span class=\"neg\">\u2013 GYD 6,050</span></div>\n          <div class=\"settle-row\"><span>Subscription (weekly)</span><span class=\"neg\">\u2013 GYD 2,375</span></div>\n          <div class=\"settle-row\"><span>Processing & COD fees</span><span class=\"neg\">\u2013 GYD 1,955</span></div>\n          <div class=\"settle-total\">\n            <span>Amount Due</span>\n            <strong>GYD 114,626</strong>\n          </div>\n          <div class=\"deduction-visual\">\n            <div class=\"bar-seg\" style=\"width:46.3%;background:#e74c3c\" title=\"Commission 46.3%\"></div>\n            <div class=\"bar-seg\" style=\"width:31.3%;background:#f39c12\" title=\"Free Delivery 31.3%\"></div>\n            <div class=\"bar-seg\" style=\"width:12.3%;background:#3498db\" title=\"Subscription 12.3%\"></div>\n            <div class=\"bar-seg\" style=\"width:6.6%;background:#9b59b6\" title=\"Processing 6.6%\"></div>\n            <div class=\"bar-seg\" style=\"width:3.5%;background:#1abc9c\" title=\"COD 3.5%\"></div>\n          </div>\n          <div class=\"legend\">\n            <span><i style=\"background:#e74c3c\"></i> Commission</span>\n            <span><i style=\"background:#f39c12\"></i> Free Delivery</span>\n            <span><i style=\"background:#3498db\"></i> Subscription</span>\n            <span><i style=\"background:#9b59b6\"></i> Processing</span>\n            <span><i style=\"background:#1abc9c\"></i> COD</span>\n          </div>\n        ";
+const SETTLEMENT_HTML = `
+        <h3>Weekly Settlement</h3>
+        <div class="settlement-card">
+          <div class="settle-header">
+            <span>This week</span>
+            <span class="status paid">No sales yet</span>
+          </div>
+          <div class="settle-row"><span>Gross Sales</span><strong>GYD 0</strong></div>
+          <div class="settle-row"><span>Platform Commission (7%)</span><span class="neg">– GYD 0</span></div>
+          <div class="settle-row"><span>Delivery fees</span><span class="neg">– GYD 0</span></div>
+          <div class="settle-row"><span>Other fees</span><span class="neg">– GYD 0</span></div>
+          <div class="settle-total">
+            <span>Amount Due</span>
+            <strong>GYD 0</strong>
+          </div>
+          <p class="small" style="margin-top:10px;color:var(--muted)">Settlement fills in when real orders are completed.</p>
+        </div>`;
+
 
 function daysLeft(iso) {
   if (!iso) return 0;
@@ -1187,6 +1234,8 @@ function pauseDeal(id) {
     const cd = deals.find(x => x.id === d.customerDealId);
     if (cd) cd._paused = true;
   }
+  if (typeof saveLiveDeals === 'function') saveLiveDeals();
+  if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
   renderBusiness();
   if (typeof renderDeals === 'function') {
     const cat = document.querySelector('.cat.active')?.dataset?.cat || 'all';
@@ -1203,6 +1252,8 @@ function resumeDeal(id) {
     const cd = deals.find(x => x.id === d.customerDealId);
     if (cd) cd._paused = false;
   }
+  if (typeof saveLiveDeals === 'function') saveLiveDeals();
+  if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
   renderBusiness();
   if (typeof renderDeals === 'function') {
     const cat = document.querySelector('.cat.active')?.dataset?.cat || 'all';
@@ -1250,14 +1301,34 @@ async function submitNewDeal(e) {
       d.daysLeft = daysLeft;
       d.emoji = emoji;
       if (photo) d.photo = photo;
-      if (typeof deals !== 'undefined' && d.customerDealId) {
-        const cd = deals.find(x => x.id === d.customerDealId);
-        if (cd) {
-          cd.title = title; cd.description = description; cd.price = price;
-          cd.original = original; cd.discount = discount; cd.category = category;
-          cd.daysLeft = daysLeft; cd.emoji = emoji;
-          if (photo) { cd.photo = photo; cd.emoji = emoji; }
-        }
+      // Sync to customer feed (create if missing)
+      let cd = (typeof deals !== 'undefined' && d.customerDealId)
+        ? deals.find(x => x.id === d.customerDealId)
+        : null;
+      if (!cd && typeof deals !== 'undefined') {
+        const newCid = Date.now();
+        d.customerDealId = newCid;
+        cd = {
+          id: newCid,
+          business: bizName,
+          title, description, price, original, discount, category, emoji,
+          daysLeft, distance: '1.0 km', delivery: true,
+          photo: photo || d.photo || null,
+          _paused: d.status !== 'Active'
+        };
+        deals.unshift(cd);
+      } else if (cd) {
+        cd.title = title; cd.description = description; cd.price = price;
+        cd.original = original; cd.discount = discount; cd.category = category;
+        cd.daysLeft = daysLeft; cd.emoji = emoji; cd.business = bizName;
+        if (photo) cd.photo = photo;
+        else if (d.photo) cd.photo = d.photo;
+        cd._paused = d.status !== 'Active';
+      }
+      if (typeof saveLiveDeals === 'function') saveLiveDeals();
+      if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
+      if (typeof api === 'function' && cd) {
+        api('/api/deals', { method: 'POST', body: JSON.stringify({ ...cd, photo: cd.photo ? '[image]' : null }) });
       }
     }
     closeModal();
@@ -1266,7 +1337,7 @@ async function submitNewDeal(e) {
     if (typeof renderDeals === 'function') {
       renderDeals(document.querySelector('.cat.active')?.dataset?.cat || 'all');
     }
-    showToast('Deal updated: ' + title);
+    showToast('Deal updated & published to customers: ' + title);
     return false;
   }
 
@@ -1311,12 +1382,17 @@ async function submitNewDeal(e) {
     _paused: false
   };
   if (typeof deals !== 'undefined') deals.unshift(customerDeal);
+  if (typeof saveLiveDeals === 'function') saveLiveDeals();
+  if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
 
   if (typeof api === 'function') {
     await api('/api/deals', {
       method: 'POST',
       body: JSON.stringify({ ...customerDeal, photo: photo ? '[image]' : null })
     });
+  }
+  if (typeof logActivity === 'function') {
+    logActivity('deal', 'Deal published: ' + title + ' by ' + bizName, { business: bizName, price });
   }
 
   closeModal();
@@ -1328,7 +1404,7 @@ async function submitNewDeal(e) {
   const adc = document.getElementById('biz-active-deals-count');
   if (adc) adc.textContent = String(businessDeals.filter(d => d.status === 'Active').length);
 
-  showToast('Deal published: ' + title + ' 🎉');
+  showToast('Deal published to customers: ' + title + ' 🎉');
   return false;
 }
 
@@ -1337,6 +1413,33 @@ function renderBusiness() {
   if (typeof renderBizAds === "function") renderBizAds();
   if (typeof updateBizLogoPreview === "function") updateBizLogoPreview();
   const fullAccess = canAccessFullPortal();
+
+  // Live stats from real data only (no sample numbers)
+  const activeCount = businessDeals.filter(d => d.status === 'Active').length;
+  const orderCount = (typeof incomingOrders !== 'undefined') ? incomingOrders.length : 0;
+  const weekSales = (typeof incomingOrders !== 'undefined')
+    ? incomingOrders.reduce((s, o) => s + (o.total || 0), 0) : 0;
+  const netPayout = Math.round(weekSales * 0.8); // rough until real settlement
+  const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setTxt('biz-active-deals-count', String(activeCount));
+  setTxt('biz-order-count', String(orderCount));
+  setTxt('biz-week-sales', 'GYD ' + weekSales.toLocaleString());
+  setTxt('biz-net-payout', 'GYD ' + netPayout.toLocaleString());
+  const actList = document.getElementById('biz-activity-list');
+  if (actList) {
+    if (!incomingOrders.length && !businessDeals.length) {
+      actList.innerHTML = '<div class="activity-item">No activity yet — post a deal or wait for orders.</div>';
+    } else {
+      const lines = [];
+      businessDeals.slice(0, 5).forEach(d => {
+        lines.push(`<div class="activity-item">🎁 Deal ${d.status === 'Active' ? 'live' : 'paused'}: ${d.title} – GYD ${(d.price||0).toLocaleString()}</div>`);
+      });
+      incomingOrders.slice(0, 5).forEach(o => {
+        lines.push(`<div class="activity-item">🛒 Order ${o.id}: ${o.item} – GYD ${(o.total||0).toLocaleString()}</div>`);
+      });
+      actList.innerHTML = lines.join('') || '<div class="activity-item">No activity yet.</div>';
+    }
+  }
 
   // Lock orders / settlement when expired
   const ordersPanel = document.getElementById('biz-orders');
@@ -3218,4 +3321,20 @@ function closeSignupSuccess() {
   const user = pendingSignupContinue;
   pendingSignupContinue = null;
   if (user) enterApp(user.role || pendingRole || 'customer');
+}
+
+async function refreshDealsFromServer() {
+  try {
+    const res = await api('/api/deals');
+    const list = res && (res.deals || (Array.isArray(res) ? res : null));
+    if (list && list.length) {
+      // Merge server deals into local (server wins by id)
+      list.forEach(sd => {
+        const existing = deals.find(d => d.id === sd.id);
+        if (existing) Object.assign(existing, sd);
+        else deals.push(sd);
+      });
+      saveLiveDeals();
+    }
+  } catch (_) {}
 }

@@ -36,6 +36,7 @@ let availableJobs = [];
 const DATA_DIR = path.join(ROOT, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const PROOFS_FILE = path.join(DATA_DIR, 'proofs.json');
+const DEALS_FILE = path.join(DATA_DIR, 'deals.json');
 const OUTBOX_DIR = path.join(DATA_DIR, 'outbox');
 
 function ensureDataDirs() {
@@ -57,6 +58,8 @@ function saveJSON(file, data) {
 
 let users = loadJSON(USERS_FILE, []);
 let deliveryProofs = loadJSON(PROOFS_FILE, []);
+deals = loadJSON(DEALS_FILE, []);
+function persistDeals() { saveJSON(DEALS_FILE, deals); }
 const passwordResetTokens = new Map(); // email -> { code, exp }
 
 function persistUsers() { saveJSON(USERS_FILE, users); }
@@ -245,11 +248,11 @@ async function handleAPI(req, res, pathname, query) {
 
   // Deals
   if (pathname === '/api/deals' && method === 'GET') {
-    let list = deals;
+    let list = deals.filter(d => !d._paused);
     if (query.category && query.category !== 'all') {
-      list = deals.filter(d => d.category === query.category);
+      list = list.filter(d => d.category === query.category);
     }
-    return sendJSON(res, 200, list);
+    return sendJSON(res, 200, { deals: list });
   }
 
 
@@ -259,9 +262,11 @@ async function handleAPI(req, res, pathname, query) {
       if (!body.title || !body.price) {
         return sendJSON(res, 400, { error: 'title and price required' });
       }
+      const id = body.id || (deals.length ? Math.max(...deals.map(d => Number(d.id) || 0)) + 1 : Date.now());
+      const existing = deals.find(d => String(d.id) === String(id));
       const deal = {
-        id: deals.length ? Math.max(...deals.map(d => d.id)) + 1 : 1,
-        business: body.business || 'Local Business',
+        id,
+        business: body.business || (existing && existing.business) || 'Local Business',
         title: body.title,
         price: Number(body.price),
         original: Number(body.original) || Number(body.price),
@@ -271,11 +276,19 @@ async function handleAPI(req, res, pathname, query) {
         description: body.description || body.title,
         daysLeft: body.daysLeft || 5,
         distance: body.distance || '1.0 km',
-        delivery: body.delivery !== false
+        delivery: body.delivery !== false,
+        photo: body.photo && body.photo !== '[image]' ? body.photo : (existing && existing.photo) || null,
+        _paused: !!body._paused
       };
-      deals.unshift(deal);
+      if (existing) {
+        Object.assign(existing, deal);
+      } else {
+        deals.unshift(deal);
+      }
+      if (typeof persistDeals === 'function') persistDeals();
       return sendJSON(res, 201, { success: true, deal });
     } catch (e) {
+      console.error(e);
       return sendJSON(res, 400, { error: 'Invalid JSON' });
     }
   }
