@@ -20,31 +20,16 @@ function uuid() {
 }
 
 // ─── Data store ────────────────────────────────────────────────────────────
-const deals = [
-  { id: 1, business: 'Island Breeze Restaurant', title: 'Pepperpot + Rice Combo', price: 4800, original: 6500, discount: 26, category: 'food', emoji: '🍲', description: 'Authentic Guyanese pepperpot with fluffy plantain rice. Serves 1–2.', daysLeft: 2, distance: '1.2 km', delivery: true },
-  { id: 2, business: 'Craft Plus Too', title: 'Handcrafted Wooden Bowl Set', price: 8500, original: 12000, discount: 29, category: 'gifts', emoji: '🪵', description: 'Set of 3 hand-carved bowls from local greenheart wood.', daysLeft: 5, distance: '0.8 km', delivery: true },
-  { id: 3, business: 'Style Avenue', title: 'Linen Shirt – Men’s', price: 5500, original: 8000, discount: 31, category: 'fashion', emoji: '👔', description: 'Breathable linen, perfect for Georgetown heat.', daysLeft: 4, distance: '1.5 km', delivery: true },
-  { id: 4, business: 'Guyana Flavours', title: 'Local Spice Gift Box', price: 3900, original: 5200, discount: 25, category: 'gifts', emoji: '🌶️', description: 'Cassareep, wiri wiri, thyme & more – ready to gift.', daysLeft: 7, distance: '2.1 km', delivery: true },
-  { id: 5, business: 'Big Kahuna Burger', title: 'Buy 1 Get 1 Free Burgers', price: 1800, original: 3600, discount: 50, category: 'food', emoji: '🍔', description: 'Classic beef burgers. BOGO on Tuesday–Thursday.', daysLeft: 3, distance: '0.9 km', delivery: true },
-  { id: 6, business: 'Glow Beauty', title: 'Shea Butter Hair Care Set', price: 4200, original: 6000, discount: 30, category: 'beauty', emoji: '✨', description: 'Natural shea butter shampoo + leave-in conditioner.', daysLeft: 6, distance: '1.8 km', delivery: true },
-  { id: 7, business: 'Tropic Wear', title: 'Ankara Print Dress', price: 7500, original: 11000, discount: 32, category: 'fashion', emoji: '👗', description: 'Vibrant Ankara midi dress, sizes S–XL.', daysLeft: 4, distance: '1.3 km', delivery: true },
-  { id: 8, business: 'Tropical Sips', title: 'Fresh Coconut Water (6-pack)', price: 1800, original: 2400, discount: 25, category: 'food', emoji: '🥥', description: 'Ice-cold fresh coconut water. Delivered chilled.', daysLeft: 2, distance: '1.0 km', delivery: true }
-];
+let deals = [];
 
-const riders = [
-  { id: 'R1', name: 'Marcus D.', phone: '592-671-8801', rating: 4.9, ratingCount: 128, avatar: '🧔', online: true, lat: 6.8013, lng: -58.1551 },
-  { id: 'R2', name: 'Aisha K.', phone: '592-624-3390', rating: 4.8, ratingCount: 95, avatar: '👩', online: true, lat: 6.808, lng: -58.162 },
-  { id: 'R3', name: 'Ryan P.', phone: '592-612-7742', rating: 5.0, ratingCount: 64, avatar: '👨', online: true, lat: 6.815, lng: -58.148 },
-  { id: 'R4', name: 'Keisha B.', phone: '592-645-1128', rating: 4.7, ratingCount: 112, avatar: '👩‍🦱', online: false, lat: 6.795, lng: -58.160 }
-];
+
+let riders = [];
+
 
 const orders = [];
 const ratings = [];
-let availableJobs = [
-  { id: 'DEL-441', business: 'Island Breeze', item: 'Pepperpot Combo ×2', address: '12 Lamaha Street, Georgetown', phone: '592-612-3456', customer: 'Aaliyah R.', fee: 550, distance: '2.3 km', lat: 6.812, lng: -58.155 },
-  { id: 'DEL-442', business: 'Craft Plus Too', item: 'Wooden Bowl Set', address: 'Hibiscus Craft Plaza, Robbstown', phone: '592-624-8891', customer: 'Kevin M.', fee: 450, distance: '1.1 km', lat: 6.808, lng: -58.162 },
-  { id: 'DEL-443', business: 'Guyana Flavours', item: 'Spice Gift Box ×3', address: '45 Sheriff Street, Georgetown', phone: '592-671-2203', customer: 'Sofia T.', fee: 600, distance: '3.4 km', lat: 6.821, lng: -58.149 }
-];
+let availableJobs = [];
+
 
 
 // Persistent storage (users + delivery proofs)
@@ -157,10 +142,8 @@ function publicUser(u) {
   return rest;
 }
 
-const businessStats = {
-  name: 'Island Breeze Restaurant', plan: 'Growth',
-  weekSales: 142900, orders: 34, activeDeals: 6, netPayout: 114626
-};
+const businessStats = { name: '', plan: 'trial', weekSales: 0, orders: 0, activeDeals: 0, netPayout: 0 };
+
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 const MIME = {
@@ -542,6 +525,18 @@ async function handleAPI(req, res, pathname, query) {
       };
       users.push(user);
       persistUsers();
+      if (role === 'delivery') {
+        riders.push({
+          id: user.riderId || user.id,
+          name: user.name,
+          phone: user.phone || '',
+          rating: 5,
+          ratingCount: 0,
+          online: true,
+          lat: 6.8013,
+          lng: -58.1551
+        });
+      }
 
       const roleLabel = role === 'business' ? 'Business' : role === 'delivery' ? 'Delivery partner' : role === 'manager' ? 'Manager' : 'Customer';
       const mailText =
@@ -694,6 +689,23 @@ async function handleAPI(req, res, pathname, query) {
     }
   }
 
+
+  if (pathname === '/api/admin/activity' && method === 'GET') {
+    return sendJSON(res, 200, {
+      users: users.map(publicUser),
+      deals,
+      orders,
+      availableJobs,
+      proofs: deliveryProofs.slice(0, 50),
+      counts: {
+        businesses: users.filter(u => u.role === 'business').length,
+        customers: users.filter(u => u.role === 'customer').length,
+        riders: users.filter(u => u.role === 'delivery').length,
+        deals: deals.length,
+        orders: orders.length
+      }
+    });
+  }
 
   if (pathname === '/api/admin/users' && method === 'GET') {
     return sendJSON(res, 200, users.map(u => publicUser(u)));

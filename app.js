@@ -78,120 +78,22 @@ function loginLocalUser(identifier, password, role) {
 }
 
 // ===== SAMPLE DATA =====
-const deals = [
-  {
-    id: 1,
-    title: "Pepperpot + Rice Combo",
-    business: "Island Breeze Restaurant",
-    category: "food",
-    original: 6500,
-    price: 4800,
-    discount: 26,
-    emoji: "🍲",
-    expires: "2 days left",
-    distance: "1.2 km",
-    description: "Authentic Guyanese pepperpot with fluffy rice and plantain. Serves 1–2.",
-    delivery: true
-  },
-  {
-    id: 2,
-    title: "Handcrafted Wooden Bowl Set",
-    business: "Craft Plus Too",
-    category: "gifts",
-    original: 12000,
-    price: 8500,
-    discount: 29,
-    emoji: "🪵",
-    expires: "5 days left",
-    distance: "0.8 km",
-    description: "Set of 3 hand-carved hardwood bowls. Perfect gift or home décor.",
-    delivery: true
-  },
-  {
-    id: 3,
-    title: "50% Off Manicure + Pedicure",
-    business: "Glow Beauty Studio",
-    category: "beauty",
-    original: 8000,
-    price: 4000,
-    discount: 50,
-    emoji: "💅",
-    expires: "Today only",
-    distance: "2.1 km",
-    description: "Full manicure and pedicure with gel option. Book your slot after purchase.",
-    delivery: false
-  },
-  {
-    id: 4,
-    title: "Local Spice Gift Box",
-    business: "Guyana Flavours",
-    category: "gifts",
-    original: 5500,
-    price: 3900,
-    discount: 29,
-    emoji: "🌶️",
-    expires: "4 days left",
-    distance: "1.5 km",
-    description: "Cassareep, wiri wiri peppers, thyme & more. Beautifully packaged.",
-    delivery: true
-  },
-  {
-    id: 5,
-    title: "Buy 1 Get 1 Free Burgers",
-    business: "Big Kahuna Burger",
-    category: "food",
-    original: 3600,
-    price: 1800,
-    discount: 50,
-    emoji: "🍔",
-    expires: "3 days left",
-    distance: "0.6 km",
-    description: "Any classic burger. Second one free. Dine-in or takeaway.",
-    delivery: true
-  },
-  {
-    id: 6,
-    title: "Summer Dress Collection",
-    business: "Trendy Threads GY",
-    category: "fashion",
-    original: 9000,
-    price: 6300,
-    discount: 30,
-    emoji: "👗",
-    expires: "6 days left",
-    distance: "1.8 km",
-    description: "Select summer dresses – light fabrics perfect for Georgetown heat.",
-    delivery: true
-  },
-  {
-    id: 7,
-    title: "1-Hour Deep Tissue Massage",
-    business: "Serenity Spa",
-    category: "services",
-    original: 10000,
-    price: 7000,
-    discount: 30,
-    emoji: "💆",
-    expires: "7 days left",
-    distance: "2.4 km",
-    description: "Relaxing deep tissue session with aromatic oils.",
-    delivery: false
-  },
-  {
-    id: 8,
-    title: "Fresh Coconut Water (6-pack)",
-    business: "Tropical Sips",
-    category: "food",
-    original: 2400,
-    price: 1800,
-    discount: 25,
-    emoji: "🥥",
-    expires: "1 day left",
-    distance: "0.9 km",
-    description: "Ice-cold fresh coconut water. Delivered chilled.",
-    delivery: true
+let deals = []; // Live deals only — posted by real businesses
+// One-time purge of old demo data cached in the browser
+try {
+  if (!localStorage.getItem('tgs_clean_v1')) {
+    localStorage.removeItem('tgs_admin_users');
+    localStorage.removeItem('tgs_platform_ads');
+    localStorage.removeItem('tgs_activity');
+    localStorage.removeItem('tgs_payments');
+    localStorage.removeItem('tgs_live_orders');
+    localStorage.removeItem('tgs_pod_history');
+    localStorage.removeItem('tgs_biz_deals');
+    localStorage.removeItem('tgs_revenue');
+    localStorage.setItem('tgs_clean_v1', '1');
   }
-];
+} catch (_) {}
+
 
 // Customer live delivery tracking
 let customerLiveOrders = [];
@@ -203,26 +105,16 @@ function saveLiveOrders() {
   try { localStorage.setItem('tgs_live_orders', JSON.stringify(customerLiveOrders)); } catch (_) {}
 }
 
-const businessDeals = [
-  { id: "BD1", title: "Pepperpot + Rice Combo", price: 4800, original: 6500, status: "Active", redemptions: 23, photo: null, emoji: "🍲", description: "Authentic pepperpot", category: "food", daysLeft: 5 },
-  { id: "BD2", title: "Friday Fish Fry Special", price: 3500, original: 4500, status: "Active", redemptions: 11, photo: null, emoji: "🐟", description: "Crispy fried fish", category: "food", daysLeft: 3 },
-  { id: "BD3", title: "Family Platter (4 pax)", price: 12000, original: 15000, status: "Active", redemptions: 7, photo: null, emoji: "🍛", description: "Family meal deal", category: "food", daysLeft: 7 },
-  { id: "BD4", title: "Cook-up Rice Bowl", price: 2800, original: 3500, status: "Paused", redemptions: 41, photo: null, emoji: "🍚", description: "Classic cook-up", category: "food", daysLeft: 4 }
-];
+let businessDeals = []; // Business posts only their own deals
+
 let pendingDealPhoto = null; // data URL for new/edit deal photo
 let editingDealId = null;
 
-const incomingOrders = [
-  { id: "ORD-8821", item: "Pepperpot Combo ×2", type: "Delivery", total: 9600, status: "Ready", customer: "Aaliyah R." },
-  { id: "ORD-8819", item: "Family Platter", type: "Pickup", total: 12000, status: "Preparing", customer: "Kevin M." },
-  { id: "ORD-8815", item: "Pepperpot Combo", type: "Delivery", total: 4800, status: "New", customer: "Sofia T." }
-];
+let incomingOrders = []; // Real orders only
 
-const riderOrders = [
-  { id: "DEL-441", business: "Island Breeze", item: "Pepperpot Combo ×2", address: "12 Lamaha Street, Georgetown", phone: "592-612-3456", customer: "Aaliyah R.", fee: 550, distance: "2.3 km", lat: 6.812, lng: -58.155 },
-  { id: "DEL-442", business: "Craft Plus Too", item: "Wooden Bowl Set", address: "Hibiscus Craft Plaza, Robbstown", phone: "592-624-8891", customer: "Kevin M.", fee: 450, distance: "1.1 km", lat: 6.808, lng: -58.162 },
-  { id: "DEL-443", business: "Guyana Flavours", item: "Spice Gift Box ×3", address: "45 Sheriff Street, Georgetown", phone: "592-671-2203", customer: "Sofia T.", fee: 600, distance: "3.4 km", lat: 6.821, lng: -58.149 }
-];
+
+let riderOrders = []; // Real delivery jobs only
+
 
 // ===== STATE =====
 let cart = [];
@@ -238,10 +130,8 @@ let currentUser = null;
 const DEMO_USERS = {}; // production: no demo accounts
 
 // Platform ads managed by Manager
-let platformAds = [
-  { id: "AD1", headline: "Promote your business here", sub: "Reach shoppers across Guyana · From GYD 5,000/mo", place: "login", status: "Active" },
-  { id: "AD2", headline: "Island Breeze — Pepperpot Special", sub: "GYD 4,800 · Free delivery over GYD 4,000 · Georgetown", place: "customer", status: "Active" }
-];
+let platformAds = []; // Manager-created ads only
+
 
 // Admin-managed user directories (seeded from demos)
 // Platform revenue (demo ledger)
@@ -284,7 +174,7 @@ function uploadBusinessLogo(e) {
   if (!file.type.startsWith('image/')) { showToast('Please choose an image'); return; }
   const reader = new FileReader();
   reader.onload = () => {
-    const bizName = (currentUser && currentUser.businessName) || 'Island Breeze Restaurant';
+    const bizName = (currentUser && currentUser.businessName) || (currentUser && currentUser.businessName) || 'Your Business';
     businessLogos[bizName] = reader.result;
     saveBusinessLogos();
     // Update admin user record
@@ -300,7 +190,7 @@ function uploadBusinessLogo(e) {
 }
 
 function clearBusinessLogo() {
-  const bizName = (currentUser && currentUser.businessName) || 'Island Breeze Restaurant';
+  const bizName = (currentUser && currentUser.businessName) || (currentUser && currentUser.businessName) || 'Your Business';
   delete businessLogos[bizName];
   saveBusinessLogos();
   const u = adminUsers.find(x => x.role === 'business' && x.businessName === bizName);
@@ -313,7 +203,7 @@ function clearBusinessLogo() {
 }
 
 function updateBizLogoPreview() {
-  const bizName = (currentUser && currentUser.businessName) || 'Island Breeze Restaurant';
+  const bizName = (currentUser && currentUser.businessName) || (currentUser && currentUser.businessName) || 'Your Business';
   const prev = document.getElementById('biz-logo-preview');
   if (!prev) return;
   const logo = getBusinessLogo(bizName);
@@ -694,6 +584,7 @@ function enterApp(role) {
     updateHeaderUser();
   } else if (role === "delivery") {
     document.getElementById("delivery-app").classList.add("active");
+    if (typeof syncRidersFromUsers === "function") syncRidersFromUsers();
     if (typeof renderRider === "function") renderRider();
     updateHeaderUser();
     if (typeof loadPodHistory === "function") loadPodHistory();
@@ -710,7 +601,8 @@ function enterApp(role) {
     document.getElementById("manager-app").classList.add("active");
     const lbl = document.getElementById("mgr-user-label");
     if (lbl) lbl.textContent = "raulkc";
-    renderManager();
+    if (typeof refreshManagerFromServer === "function") refreshManagerFromServer().then(() => renderManager());
+    else renderManager();
   } else {
     document.getElementById("role-selector").classList.add("active");
   }
@@ -773,7 +665,17 @@ function renderDeals(filter = 'all') {
   if (!feed) return;
   const filtered = (filter === 'all' ? deals : deals.filter(d => d.category === filter))
     .filter(d => !d._paused);
-  
+
+  if (!filtered.length) {
+    feed.innerHTML = `
+      <div class="empty-state" style="text-align:center;padding:40px 20px;color:var(--muted)">
+        <div style="font-size:48px;margin-bottom:12px">🎁</div>
+        <h3 style="color:var(--text);margin-bottom:8px">No deals yet</h3>
+        <p class="small">When businesses post specials, they will appear here for shoppers across Guyana.</p>
+      </div>`;
+    return;
+  }
+
   feed.innerHTML = filtered.map(d => {
     const logo = (typeof getBusinessLogo === 'function' && getBusinessLogo(d.business)) || d.businessLogo || null;
     return `
@@ -1310,7 +1212,7 @@ async function submitNewDeal(e) {
   }
 
   const discount = original > price ? Math.round((1 - price / original) * 100) : 0;
-  const bizName = (currentUser && currentUser.businessName) || 'Island Breeze Restaurant';
+  const bizName = (currentUser && currentUser.businessName) || (currentUser && currentUser.businessName) || 'Your Business';
   const photo = pendingDealPhoto;
 
   // EDIT existing deal
@@ -1508,12 +1410,18 @@ document.querySelectorAll('.biz-tab').forEach(tab => {
 
 // ===== RIDER =====
 function renderRider() {
-  document.getElementById('rider-orders').innerHTML = riderOrders.map(o => `
+  const el = document.getElementById('rider-orders');
+  if (!el) return;
+  if (!riderOrders.length) {
+    el.innerHTML = '<p class="small" style="text-align:center;padding:20px;color:var(--muted)">No delivery jobs yet. Orders appear here when customers check out for delivery.</p>';
+    return;
+  }
+  el.innerHTML = riderOrders.map(o => `
     <div class="rider-order" id="rider-${o.id}">
       <h4>${o.item}</h4>
       <div class="rider-meta">
         ${o.business} → ${o.address}<br>
-        ${o.distance} · Earn GYD ${o.fee}
+        ${o.distance || ''} · Earn GYD ${o.fee || 0}
       </div>
       <div class="rider-actions">
         <button class="decline-btn" onclick="declineOrder('${o.id}')">Decline</button>
@@ -1829,8 +1737,8 @@ function acceptOrder(id) {
   // Update customer live delivery status
   if (typeof notifyCustomerRiderAccepted === 'function') {
     notifyCustomerRiderAccepted(order.id, {
-      name: (currentUser && currentUser.name) || 'Marcus D.',
-      phone: (currentUser && currentUser.phone) || '592-671-8801',
+      name: (currentUser && currentUser.name) || (currentUser && currentUser.name) || 'Rider',
+      phone: (currentUser && currentUser.phone) || (currentUser && currentUser.phone) || '',
       rating: 4.9
     });
   }
@@ -2237,14 +2145,35 @@ placeOrder = function() {
 };
 
 // ===== ASSIGNED RIDER INFO (shown to customer) =====
-const sampleRiders = [
-  { id: "R1", name: "Marcus D.", phone: "592-671-8801", rating: 4.9, ratingCount: 128, avatar: "🧔" },
-  { id: "R2", name: "Aisha K.", phone: "592-624-3390", rating: 4.8, ratingCount: 95, avatar: "👩" },
-  { id: "R3", name: "Ryan P.", phone: "592-612-7742", rating: 5.0, ratingCount: 64, avatar: "👨" },
-  { id: "R4", name: "Keisha B.", phone: "592-645-1128", rating: 4.7, ratingCount: 112, avatar: "👩‍🦱" }
-];
+let sampleRiders = []; // Real registered riders only
+function syncRidersFromUsers() {
+  sampleRiders = (typeof adminUsers !== 'undefined' ? adminUsers : [])
+    .filter(u => u.role === 'delivery')
+    .map(u => ({
+      id: u.riderId || u.id,
+      name: u.name || 'Rider',
+      phone: u.phone || '',
+      rating: u.rating || 5,
+      ratingCount: u.ratingCount || 0,
+      avatar: '🛵'
+    }));
+  if (currentUser && currentUser.role === 'delivery') {
+    const exists = sampleRiders.find(r => r.id === (currentUser.riderId || currentUser.id));
+    if (!exists) {
+      sampleRiders.push({
+        id: currentUser.riderId || currentUser.id,
+        name: currentUser.name || 'Rider',
+        phone: currentUser.phone || '',
+        rating: 5,
+        ratingCount: 0,
+        avatar: '🛵'
+      });
+    }
+  }
+}
 
-let assignedRider = sampleRiders[0];
+
+let assignedRider = null;
 let selectedStars = 0;
 const riderRatingsLog = []; // local log of submitted ratings
 
@@ -2253,7 +2182,10 @@ function formatRiderRating(r) {
 }
 
 function setTrackingRider(rider) {
-  assignedRider = rider || sampleRiders[Math.floor(Math.random() * sampleRiders.length)];
+  syncRidersFromUsers();
+  assignedRider = rider || sampleRiders[0] || {
+    id: 'R-PENDING', name: 'Awaiting rider', phone: '', rating: 5, ratingCount: 0, avatar: '🛵'
+  };
   const nameEl = document.getElementById('track-rider-name');
   const phoneEl = document.getElementById('track-rider-phone');
   const callBtn = document.getElementById('track-rider-call-btn');
@@ -2922,21 +2854,57 @@ function setTrackStatusSteps(step) {
 
 function createLiveOrder(payload) {
   const id = 'ORD-' + Date.now().toString(36).toUpperCase();
+  const item = payload.item || 'Your order';
+  const customerName = payload.customerName || (currentUser && currentUser.name) || 'Customer';
   const order = {
     id,
-    item: payload.item || 'Your order',
+    item,
     total: payload.total || 0,
     address: payload.address || '',
     phone: payload.phone || '',
     customerEmail: payload.customerEmail || (currentUser && currentUser.email) || '',
-    customerName: payload.customerName || (currentUser && currentUser.name) || '',
-    status: 'confirmed', // confirmed | preparing | accepted | on_the_way | delivered
+    customerName,
+    status: 'confirmed',
     rider: null,
     createdAt: new Date().toISOString()
   };
   customerLiveOrders.unshift(order);
   saveLiveOrders();
-  // Simulate business preparing after a few seconds
+
+  // Business portal — real order
+  if (typeof incomingOrders !== 'undefined') {
+    incomingOrders.unshift({
+      id,
+      item,
+      type: 'Delivery',
+      total: payload.total || 0,
+      status: 'New',
+      customer: customerName
+    });
+  }
+
+  // Rider portal — real delivery job
+  if (typeof riderOrders !== 'undefined') {
+    riderOrders.unshift({
+      id,
+      business: payload.business || (deals[0] && deals[0].business) || 'Business',
+      item,
+      address: payload.address || '',
+      phone: payload.phone || '',
+      customer: customerName,
+      fee: Math.max(400, Math.round((payload.total || 0) * 0.08)),
+      distance: '—',
+      lat: 6.812,
+      lng: -58.155
+    });
+  }
+
+  if (typeof logActivity === 'function') {
+    logActivity('order', 'New order ' + id + ' · ' + item + ' · GYD ' + (payload.total || 0), {
+      orderId: id, customer: customerName
+    });
+  }
+
   setTimeout(() => {
     updateLiveOrderStatus(id, 'preparing');
   }, 4000);
@@ -3058,3 +3026,44 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("auth-email")?.addEventListener("blur", syncEmailToIdentifier);
   document.getElementById("auth-email")?.addEventListener("change", syncEmailToIdentifier);
 });
+
+
+/** Pull live users from backend into manager directory */
+async function refreshManagerFromServer() {
+  try {
+    const res = await api('/api/admin/users');
+    if (res && Array.isArray(res.users)) {
+      // Merge server users into adminUsers (server is source of truth for sign-ups)
+      res.users.forEach(su => {
+        const exists = adminUsers.find(u =>
+          (u.email && su.email && u.email.toLowerCase() === su.email.toLowerCase()) ||
+          (u.identifier && su.identifier && u.identifier === su.identifier) ||
+          (u.id && su.id && u.id === su.id)
+        );
+        if (!exists) {
+          adminUsers.push({
+            id: su.id,
+            name: su.name,
+            identifier: su.identifier || su.email,
+            role: su.role,
+            phone: su.phone || '',
+            email: su.email || '',
+            businessName: su.businessName || null,
+            subscription: su.role === 'business' ? (su.subscription || 'trial') : 'n/a',
+            paidUntil: su.paidUntil || null,
+            createdAt: su.createdAt
+          });
+        } else {
+          Object.assign(exists, {
+            name: su.name || exists.name,
+            phone: su.phone || exists.phone,
+            email: su.email || exists.email,
+            businessName: su.businessName || exists.businessName
+          });
+        }
+      });
+      saveAdminUsers();
+    }
+  } catch (_) {}
+  if (typeof syncRidersFromUsers === 'function') syncRidersFromUsers();
+}
