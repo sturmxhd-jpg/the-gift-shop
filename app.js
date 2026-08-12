@@ -168,6 +168,43 @@ function loadRiderOrders() {
 loadRiderOrders();
 loadIncomingOrders();
 
+function getRiderEarningsKey() {
+  const id = (currentUser && (currentUser.id || currentUser.identifier || currentUser.email)) || 'guest';
+  return 'tgs_rider_earnings_' + id;
+}
+function getRiderEarnings() {
+  try {
+    return Number(localStorage.getItem(getRiderEarningsKey()) || '0') || 0;
+  } catch (_) { return 0; }
+}
+function addRiderEarnings(amount) {
+  const n = Math.max(0, Number(amount) || 0);
+  const total = getRiderEarnings() + n;
+  try { localStorage.setItem(getRiderEarningsKey(), String(total)); } catch (_) {}
+  updateRiderEarningsUI();
+  return total;
+}
+function updateRiderEarningsUI() {
+  const el = document.getElementById('rider-earnings');
+  if (!el) return;
+  el.textContent = 'GYD ' + getRiderEarnings().toLocaleString();
+}
+// Remove phantom / stale delivery jobs that were never real customer orders
+try {
+  if (!localStorage.getItem('tgs_clean_rider_v2')) {
+    // Keep only jobs that look like real ORD- ids from createLiveOrder
+    riderOrders = (riderOrders || []).filter(o =>
+      o && o.id && String(o.id).startsWith('ORD-') && o.item && o.customer
+    );
+    saveRiderOrders();
+    incomingOrders = (incomingOrders || []).filter(o =>
+      o && o.id && String(o.id).startsWith('ORD-')
+    );
+    saveIncomingOrders();
+    localStorage.setItem('tgs_clean_rider_v2', '1');
+  }
+} catch (_) {}
+
 function saveIncomingOrders() {
   try { localStorage.setItem('tgs_incoming_orders', JSON.stringify(incomingOrders)); } catch (_) {}
 }
@@ -665,6 +702,7 @@ function enterApp(role) {
     document.getElementById("delivery-app").classList.add("active");
     if (typeof syncRidersFromUsers === "function") syncRidersFromUsers();
     if (typeof renderRider === "function") renderRider();
+    if (typeof updateRiderEarningsUI === "function") updateRiderEarningsUI();
     updateHeaderUser();
     if (typeof loadPodHistory === "function") loadPodHistory();
   } else if (role === "manager") {
@@ -1450,12 +1488,20 @@ async function submitNewDeal(e) {
   if (typeof deals !== 'undefined') deals.unshift(customerDeal);
   if (typeof saveLiveDeals === 'function') saveLiveDeals();
   if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
+  try { localStorage.setItem('tgs_deals_bump', String(Date.now())); } catch (_) {}
 
   if (typeof api === 'function') {
     await api('/api/deals', {
       method: 'POST',
       body: JSON.stringify({ ...customerDeal, photo: photo ? '[image]' : null })
     });
+  }
+  // Force customer feed to pick up the change even if already open
+  if (typeof refreshDealsFromServer === 'function') {
+    await refreshDealsFromServer();
+  }
+  if (typeof renderDeals === 'function') {
+    renderDeals(document.querySelector('.cat.active')?.dataset?.cat || 'all');
   }
   if (typeof logActivity === 'function') {
     logActivity('deal', 'Deal published: ' + title + ' by ' + bizName, { business: bizName, price });
@@ -1481,8 +1527,15 @@ function renderBusiness() {
   const fullAccess = canAccessFullPortal();
   const addrEl = document.getElementById('biz-pickup-address');
   if (addrEl && currentUser) {
-    addrEl.value = currentUser.address || localStorage.getItem('tgs_biz_address_' + (currentUser.identifier || 'biz')) || '';
+    // Never overwrite while the user is typing (auto-refresh was wiping the field)
+    const typing = document.activeElement === addrEl;
+    if (!typing) {
+      const saved = currentUser.address || localStorage.getItem('tgs_biz_address_' + (currentUser.identifier || 'biz')) || '';
+      if (addrEl.value !== saved) addrEl.value = saved;
+    }
   }
+  // Live settlement from real orders
+  if (typeof updateBizSettlement === 'function') updateBizSettlement();
 
   // Live stats from real data only (no sample numbers)
   const activeCount = businessDeals.filter(d => d.status === 'Active').length;
@@ -2076,6 +2129,22 @@ async function confirmPod() {
 
   if (typeof notifyCustomerDelivered === 'function') notifyCustomerDelivered(orderId);
 
+  // Credit rider earnings from job fee
+  const job = (typeof riderOrders !== 'undefined' && riderOrders.find(r => r.id === orderId))
+    || window._activeRiderJob
+    || null;
+  const earned = (job && (job.fee || 0)) || 400;
+  if (typeof addRiderEarnings === 'function') {
+    const total = addRiderEarnings(earned);
+    showToast('+' + earned.toLocaleString() + ' GYD earned · Total GYD ' + total.toLocaleString());
+  }
+  // Remove completed job from available list
+  if (typeof riderOrders !== 'undefined') {
+    riderOrders = riderOrders.filter(r => r.id !== orderId);
+    if (typeof saveRiderOrders === 'function') saveRiderOrders();
+  }
+  window._activeRiderJob = null;
+
   stopRiderGPS();
   activeOrderDest = null;
   riderMap = null;
@@ -2087,9 +2156,12 @@ async function confirmPod() {
     <div style="text-align:center;padding:8px 0">
       <div style="font-size:36px;margin-bottom:6px">✅</div>
       <strong>Delivery complete</strong>
-      <p class="small" style="margin-top:6px">Proof saved${saved && saved.emailSent ? ' · emailed to customer' : ' · on file for your records'}</p>
+      <p class="small" style="margin-top:6px">+GYD ${earned.toLocaleString()} added to earnings</p>
+      <p class="small">Proof saved${saved && saved.emailSent ? ' · emailed to customer' : ' · on file for your records'}</p>
     </div>
   `;
+  if (typeof updateRiderEarningsUI === 'function') updateRiderEarningsUI();
+  if (typeof renderRider === 'function') renderRider();
   showToast(saved && saved.emailSent
     ? 'Delivery confirmed — proof emailed to customer 📧'
     : 'Delivery confirmed — proof saved for your records 📸');
@@ -3442,18 +3514,26 @@ function closeSignupSuccess() {
 
 async function refreshDealsFromServer() {
   try {
+    // Always reload local persisted deals first (same device)
+    if (typeof loadLiveDeals === 'function') loadLiveDeals();
     const res = await api('/api/deals');
     const list = res && (res.deals || (Array.isArray(res) ? res : null));
     if (list && list.length) {
-      // Merge server deals into local (server wins by id)
       list.forEach(sd => {
-        const existing = deals.find(d => d.id === sd.id);
-        if (existing) Object.assign(existing, sd);
-        else deals.push(sd);
+        const existing = deals.find(d => String(d.id) === String(sd.id));
+        if (existing) {
+          // Prefer local photo if server only has placeholder
+          const photo = (sd.photo && sd.photo !== '[image]') ? sd.photo : existing.photo;
+          Object.assign(existing, sd, { photo: photo || existing.photo });
+        } else {
+          deals.push(sd);
+        }
       });
       saveLiveDeals();
     }
-  } catch (_) {}
+  } catch (_) {
+    if (typeof loadLiveDeals === 'function') loadLiveDeals();
+  }
 }
 
 // ===== AUTO-REFRESH (all portals) =====
@@ -3495,25 +3575,35 @@ async function runAutoRefresh() {
       const jobs = await api('/api/riders/jobs');
       const list = jobs && (jobs.jobs || (Array.isArray(jobs) ? jobs : null));
       if (list) {
-        // Merge available jobs
         list.forEach(j => {
+          if (!j || !j.id || !String(j.id).startsWith('ORD-')) return;
+          if (!j.item || !j.customer) return;
           if (!riderOrders.find(r => r.id === j.id)) riderOrders.push(j);
         });
-        saveRiderOrders();
+        // Drop non-ORD ghost jobs
+        const before = riderOrders.length;
+        riderOrders = riderOrders.filter(r => r && String(r.id).startsWith('ORD-') && r.item);
+        if (riderOrders.length !== before) saveRiderOrders();
+        else saveRiderOrders();
       }
     }
 
     if (document.getElementById('customer-app')?.classList.contains('active')) {
+      if (typeof loadLiveDeals === 'function') loadLiveDeals();
       if (typeof renderDeals === 'function') renderDeals(document.querySelector('.cat.active')?.dataset?.cat || 'all');
       if (typeof renderCustomerOrders === 'function') renderCustomerOrders();
       if (typeof updateLiveTrackBanner === 'function') updateLiveTrackBanner();
     }
     if (document.getElementById('business-app')?.classList.contains('active')) {
-      if (typeof renderBusiness === 'function') renderBusiness();
+      const ae = document.activeElement;
+      const editing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT');
+      if (!editing && typeof renderBusiness === 'function') renderBusiness();
+      else if (typeof updateBizSettlement === 'function') updateBizSettlement();
     }
     if (document.getElementById('delivery-app')?.classList.contains('active')) {
       if (typeof loadRiderOrders === 'function') loadRiderOrders();
       if (typeof renderRider === 'function') renderRider();
+      if (typeof updateRiderEarningsUI === 'function') updateRiderEarningsUI();
       if (typeof loadPodHistory === 'function') loadPodHistory();
     }
     if (document.getElementById('manager-app')?.classList.contains('active')) {
@@ -3657,3 +3747,28 @@ function restoreSessionSafely() {
 }
 
 // Prefer server account when signing in (already default). Local list is offline backup only.
+
+function updateBizSettlement() {
+  const gross = (typeof incomingOrders !== 'undefined')
+    ? incomingOrders.reduce((s, o) => s + (Number(o.total) || 0), 0) : 0;
+  const commission = Math.round(gross * 0.07);
+  const deliveryFees = Math.round(incomingOrders.filter(o => o.type === 'Delivery' || true).length * 0); // fees tracked on orders if present
+  const other = 0;
+  const net = Math.max(0, gross - commission - deliveryFees - other);
+  const fmt = n => 'GYD ' + (n || 0).toLocaleString();
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('settle-gross', fmt(gross));
+  set('settle-comm', '– ' + fmt(commission));
+  set('settle-del', '– ' + fmt(deliveryFees));
+  set('settle-fees', '– ' + fmt(other));
+  set('settle-net', fmt(net));
+  // Also update if SETTLEMENT_HTML static nodes
+  const card = document.getElementById('biz-settlement-card') || document.querySelector('#biz-settlement .settlement-card');
+  if (card) {
+    const status = card.querySelector('.status');
+    if (status) status.textContent = gross > 0 ? 'Live' : 'No sales yet';
+  }
+  set('biz-week-sales', fmt(gross));
+  set('biz-order-count', String(incomingOrders.length));
+  set('biz-net-payout', fmt(net));
+}

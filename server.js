@@ -408,6 +408,9 @@ async function handleAPI(req, res, pathname, query) {
       if (!body.id || !body.item) {
         return sendJSON(res, 400, { error: 'id and item required' });
       }
+      if (!String(body.id).startsWith('ORD-')) {
+        return sendJSON(res, 400, { error: 'Invalid job id' });
+      }
       const exists = availableJobs.find(j => j.id === body.id);
       if (!exists) {
         availableJobs.unshift({
