@@ -94,7 +94,10 @@
         </div>
         <div class="form-group">
           <label>Password</label>
-          <input type="password" id="auth-password" placeholder="Create a secure password" autocomplete="current-password" required minlength="6">
+          <div class="password-wrap">
+            <input type="password" id="auth-password" placeholder="Create a secure password" autocomplete="current-password" required minlength="6">
+            <button type="button" class="pw-toggle" id="pw-toggle-btn" onclick="togglePasswordVisible('auth-password','pw-toggle-btn')" aria-label="Show password">👁</button>
+          </div>
         </div>
         <div class="form-group" id="business-group" style="display:none">
           <label>Business name</label>
@@ -104,8 +107,59 @@
           On sign-up we email your login details to the address you provide for safekeeping.
         </p>
         <button type="submit" class="primary-btn" id="auth-submit">Sign in</button>
+        <button type="button" class="link-btn" id="forgot-pw-link" onclick="openForgotPassword()">Forgot password?</button>
       </form>
       <p class="login-note">New here? Tap <strong>Create account</strong> and use your email — we'll send your login details for safekeeping.</p>
+    </div>
+  </div>
+
+
+  <!-- Forgot password -->
+  <div id="forgot-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Reset password</h2>
+      <p class="small" style="margin-bottom:12px">Enter the email on your account. We will email a reset code.</p>
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" id="forgot-email" placeholder="you@email.com">
+      </div>
+      <button type="button" class="primary-btn" onclick="requestPasswordReset()">Send reset code</button>
+    </div>
+  </div>
+
+  <div id="reset-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Set new password</h2>
+      <p class="small" style="margin-bottom:12px">Enter the code from your email and choose a new password.</p>
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" id="reset-email" placeholder="you@email.com">
+      </div>
+      <div class="form-group">
+        <label>Reset code</label>
+        <input type="text" id="reset-code" placeholder="6-digit code" autocomplete="one-time-code">
+      </div>
+      <div class="form-group">
+        <label>New password</label>
+        <div class="password-wrap">
+          <input type="password" id="reset-password" placeholder="Min 6 characters" minlength="6">
+          <button type="button" class="pw-toggle" id="pw-toggle-reset" onclick="togglePasswordVisible('reset-password','pw-toggle-reset')" aria-label="Show password">👁</button>
+        </div>
+      </div>
+      <button type="button" class="primary-btn" onclick="submitPasswordReset()">Update password</button>
+    </div>
+  </div>
+
+  <!-- Signup success — credentials for safekeeping -->
+  <div id="signup-success-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeSignupSuccess()">✕</button>
+      <h2>Account created</h2>
+      <p class="small" style="margin-bottom:12px">Save these details. A copy was also sent to your email.</p>
+      <div class="cred-box" id="signup-cred-box"></div>
+      <button type="button" class="primary-btn" onclick="closeSignupSuccess()">Continue to app</button>
     </div>
   </div>
 

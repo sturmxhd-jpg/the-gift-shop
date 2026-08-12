@@ -365,14 +365,17 @@ function startLogin(role) {
     if (idLabel) idLabel.textContent = "Username";
     if (idInput) idInput.placeholder = "Manager username";
     setAuthMode("signin");
-    // Hide create account for manager
     document.querySelectorAll(".login-tab").forEach(t => {
       if (t.dataset.mode === "signup") t.style.display = "none";
     });
+    const fl = document.getElementById("forgot-pw-link");
+    if (fl) fl.style.display = "none";
   } else {
     if (idLabel) idLabel.textContent = "Email or phone";
     if (idInput) idInput.placeholder = "you@email.com or 592-6XX-XXXX";
     document.querySelectorAll(".login-tab").forEach(t => { t.style.display = ""; });
+    const fl = document.getElementById("forgot-pw-link");
+    if (fl) fl.style.display = "";
   }
   document.getElementById("auth-name").value = "";
   document.getElementById("auth-business").value = "";
@@ -526,15 +529,6 @@ async function handleAuth(e) {
 
   if (apiResult && apiResult.success) {
     user = apiResult.user;
-    if (authMode === "signup") {
-      showToast(apiResult.emailSent
-        ? "Account created! Check your email for login details."
-        : (apiResult.local
-          ? "Account created! You can sign in with your email and password."
-          : "Account created! Confirmation email queued."));
-    } else {
-      showToast("Welcome, " + (user.name || "there") + "!");
-    }
   } else {
     showToast((apiResult && apiResult.error) || (authMode === "signup" ? "Could not create account" : "Invalid email/phone or password"));
     return false;
@@ -563,6 +557,20 @@ async function handleAuth(e) {
   if (authMode === "signup" && typeof logActivity === "function") {
     logActivity("signup", (user.role || "user") + " signed up: " + (user.name || user.email), { role: user.role, email: user.email });
   }
+
+  if (authMode === "signup") {
+    // Show login details on screen + email already triggered by server
+    if (typeof showSignupCredentials === "function") {
+      showSignupCredentials(user, password, !!(apiResult.emailSent));
+    } else {
+      showToast("Account created!");
+      enterApp(user.role || pendingRole || "customer");
+    }
+    if (user.role === "delivery" && typeof loadPodHistory === "function") loadPodHistory();
+    return false;
+  }
+
+  showToast("Welcome, " + (user.name || "there") + "!");
   enterApp(user.role || pendingRole || "customer");
   if (user.role === "delivery" && typeof loadPodHistory === "function") loadPodHistory();
   return false;
@@ -3066,4 +3074,133 @@ async function refreshManagerFromServer() {
     }
   } catch (_) {}
   if (typeof syncRidersFromUsers === 'function') syncRidersFromUsers();
+}
+
+
+// ===== Password visibility & reset =====
+function togglePasswordVisible(inputId, btnId) {
+  const input = document.getElementById(inputId);
+  const btn = document.getElementById(btnId);
+  if (!input) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  if (btn) btn.textContent = show ? '🙈' : '👁';
+  if (btn) btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+}
+
+function openForgotPassword() {
+  document.getElementById('forgot-modal')?.classList.add('active');
+  const id = document.getElementById('auth-identifier')?.value?.trim() || '';
+  const em = document.getElementById('auth-email')?.value?.trim() || '';
+  const prefill = (em.includes('@') ? em : (id.includes('@') ? id : ''));
+  const fe = document.getElementById('forgot-email');
+  if (fe && prefill) fe.value = prefill;
+}
+
+async function requestPasswordReset() {
+  const email = document.getElementById('forgot-email')?.value?.trim().toLowerCase() || '';
+  if (!email || !email.includes('@')) {
+    showToast('Enter the email on your account');
+    return;
+  }
+  const res = await api('/api/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email })
+  });
+  // Always show next step (don't reveal if email exists)
+  closeModal();
+  document.getElementById('reset-modal')?.classList.add('active');
+  const re = document.getElementById('reset-email');
+  if (re) re.value = email;
+  if (res && res.success) {
+    showToast(res.emailSent
+      ? 'Reset code sent to your email'
+      : (res.devCode ? 'Code: ' + res.devCode + ' (email queued)' : 'If that email exists, a code was sent'));
+    if (res.devCode) {
+      const code = document.getElementById('reset-code');
+      if (code) code.value = res.devCode;
+    }
+  } else if (res && res.offline) {
+    // Local fallback
+    const local = loadLocalUsers();
+    const u = local.find(x => x.email && x.email.toLowerCase() === email);
+    if (!u) {
+      showToast('No account found with that email on this device');
+      return;
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    try { localStorage.setItem('tgs_reset_' + email, JSON.stringify({ code, exp: Date.now() + 30 * 60 * 1000 })); } catch (_) {}
+    document.getElementById('reset-code').value = code;
+    showToast('Reset code ready (offline mode)');
+  } else {
+    showToast((res && res.error) || 'Could not start reset — try again');
+  }
+}
+
+async function submitPasswordReset() {
+  const email = document.getElementById('reset-email')?.value?.trim().toLowerCase() || '';
+  const code = document.getElementById('reset-code')?.value?.trim() || '';
+  const password = document.getElementById('reset-password')?.value || '';
+  if (!email || !code || password.length < 6) {
+    showToast('Email, code, and new password (min 6) required');
+    return;
+  }
+  let res = await api('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ email, code, password })
+  });
+  if (res && res.offline) {
+    // Local reset
+    const key = 'tgs_reset_' + email;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) {}
+    if (!saved || saved.code !== code || Date.now() > saved.exp) {
+      showToast('Invalid or expired reset code');
+      return;
+    }
+    const list = loadLocalUsers();
+    const u = list.find(x => x.email && x.email.toLowerCase() === email);
+    if (!u) {
+      showToast('Account not found');
+      return;
+    }
+    u.password = password;
+    saveLocalUsers(list);
+    localStorage.removeItem(key);
+    res = { success: true };
+  }
+  if (res && res.success) {
+    showToast('Password updated — sign in with your new password');
+    closeModal();
+    setAuthMode('signin');
+    const id = document.getElementById('auth-identifier');
+    if (id) id.value = email;
+    document.getElementById('auth-password').value = '';
+  } else {
+    showToast((res && res.error) || 'Could not update password');
+  }
+}
+
+let pendingSignupContinue = null;
+function showSignupCredentials(user, password, emailSent) {
+  const box = document.getElementById('signup-cred-box');
+  if (box) {
+    box.innerHTML = `
+      <div><strong>Name:</strong> ${user.name || ''}</div>
+      <div><strong>Role:</strong> ${user.role || ''}</div>
+      <div><strong>Email:</strong> ${user.email || user.identifier || ''}</div>
+      ${user.phone ? `<div><strong>Phone:</strong> ${user.phone}</div>` : ''}
+      ${user.businessName ? `<div><strong>Business:</strong> ${user.businessName}</div>` : ''}
+      <div><strong>Password:</strong> ${password}</div>
+      <div class="small" style="margin-top:8px">${emailSent ? '📧 Confirmation email sent' : '📧 Email queued — also save the details above'}</div>
+    `;
+  }
+  pendingSignupContinue = user;
+  document.getElementById('signup-success-modal')?.classList.add('active');
+}
+function closeSignupSuccess() {
+  document.getElementById('signup-success-modal')?.classList.remove('active');
+  const user = pendingSignupContinue;
+  pendingSignupContinue = null;
+  if (user) enterApp(user.role || pendingRole || 'customer');
 }

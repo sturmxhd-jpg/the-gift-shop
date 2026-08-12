@@ -57,6 +57,7 @@ function saveJSON(file, data) {
 
 let users = loadJSON(USERS_FILE, []);
 let deliveryProofs = loadJSON(PROOFS_FILE, []);
+const passwordResetTokens = new Map(); // email -> { code, exp }
 
 function persistUsers() { saveJSON(USERS_FILE, users); }
 function persistProofs() { saveJSON(PROOFS_FILE, deliveryProofs); }
@@ -444,6 +445,68 @@ async function handleAPI(req, res, pathname, query) {
   }
 
 
+
+  if (pathname === '/api/auth/forgot-password' && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const email = (body.email || '').trim().toLowerCase();
+      if (!isEmail(email)) return sendJSON(res, 400, { error: 'Valid email required' });
+      const user = users.find(u => u.email && u.email.toLowerCase() === email);
+      // Always return success shape to avoid email enumeration
+      if (!user) {
+        return sendJSON(res, 200, { success: true, emailSent: false });
+      }
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      passwordResetTokens.set(email, { code, exp: Date.now() + 30 * 60 * 1000 });
+      const mail = await sendEmail({
+        to: email,
+        subject: 'The Gift Shop password reset code',
+        text: 'Your password reset code is: ' + code + '\n\nIt expires in 30 minutes.\n\nIf you did not request this, ignore this email.\n— The Gift Shop',
+        html: '<p>Your password reset code is:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px">' + code + '</p><p>Expires in 30 minutes.</p><p>— The Gift Shop</p>'
+      });
+      const payload = {
+        success: true,
+        emailSent: !!(mail && mail.sent),
+        emailQueued: !!(mail && mail.queued)
+      };
+      // When email is only queued (no API key), return code so testing still works
+      if (!payload.emailSent) payload.devCode = code;
+      return sendJSON(res, 200, payload);
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid request' });
+    }
+  }
+
+  if (pathname === '/api/auth/reset-password' && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const email = (body.email || '').trim().toLowerCase();
+      const code = String(body.code || '').trim();
+      const password = body.password || '';
+      if (!isEmail(email) || !code || password.length < 6) {
+        return sendJSON(res, 400, { error: 'Email, code, and new password (min 6) required' });
+      }
+      const token = passwordResetTokens.get(email);
+      if (!token || token.code !== code || Date.now() > token.exp) {
+        return sendJSON(res, 400, { error: 'Invalid or expired reset code' });
+      }
+      const user = users.find(u => u.email && u.email.toLowerCase() === email);
+      if (!user) return sendJSON(res, 404, { error: 'Account not found' });
+      user.password = password;
+      persistUsers();
+      passwordResetTokens.delete(email);
+      await sendEmail({
+        to: email,
+        subject: 'Your The Gift Shop password was updated',
+        text: 'Your password was changed successfully. If this was not you, contact support immediately.\n— The Gift Shop',
+        html: '<p>Your password was changed successfully.</p><p>If this was not you, contact support immediately.</p><p>— The Gift Shop</p>'
+      });
+      return sendJSON(res, 200, { success: true });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid request' });
+    }
+  }
+
   // Auth
   if (pathname === '/api/auth/login' && method === 'POST') {
     try {
@@ -546,8 +609,9 @@ async function handleAPI(req, res, pathname, query) {
         'Login email: ' + email + '\n' +
         (phone ? 'Phone: ' + phone + '\n' : '') +
         (user.businessName ? 'Business: ' + user.businessName + '\n' : '') +
-        'Password: the password you chose when you signed up (we never send passwords in plain text after this welcome note if you change it later).\n\n' +
-        'Sign in any time at The Gift Shop app with your email and password.\n\n' +
+        'Password: ' + password + '\n\n' +
+        'Sign in any time at The Gift Shop app with your email and password.\n' +
+        'Forgot your password later? Use Forgot password on the sign-in screen.\n\n' +
         '— The Gift Shop (Guyana)\n';
 
       const mailResult = await sendEmail({
@@ -559,7 +623,10 @@ async function handleAPI(req, res, pathname, query) {
           '<ul><li><strong>Role:</strong> ' + roleLabel + '</li>' +
           '<li><strong>Login email:</strong> ' + email + '</li>' +
           (phone ? '<li><strong>Phone:</strong> ' + phone + '</li>' : '') +
-          '</ul><p>Sign in with the password you created.</p><p>— The Gift Shop (Guyana)</p>'
+          (user.businessName ? '<li><strong>Business:</strong> ' + user.businessName + '</li>' : '') +
+          '<li><strong>Password:</strong> ' + password + '</li></ul>' +
+          '<p>Sign in with your email and password. Use <em>Forgot password</em> on the sign-in screen if you need to reset later.</p>' +
+          '<p>— The Gift Shop (Guyana)</p>'
       });
 
       return sendJSON(res, 201, {
