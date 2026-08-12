@@ -103,6 +103,11 @@
           <label>Business name</label>
           <input type="text" id="auth-business" placeholder="Your business name">
         </div>
+        <div class="form-group" id="address-group" style="display:none">
+          <label>Pickup / physical address</label>
+          <input type="text" id="auth-address" placeholder="e.g. 12 Regent Street, Georgetown">
+          <p class="small" style="margin-top:4px;color:var(--muted)">Riders use this address to collect orders.</p>
+        </div>
         <p class="small" id="signup-email-hint" style="display:none;margin-bottom:10px;color:var(--muted)">
           On sign-up we email your login details to the address you provide for safekeeping.
         </p>
@@ -338,8 +343,13 @@
       </div>
 
       <div id="mmg-panel" class="pay-panel hidden">
-        <p class="small">You will confirm payment in the MMG app. Enter the phone number linked to your MMG wallet:</p>
-        <input type="tel" id="mmg-phone" placeholder="e.g. 592-6XX-XXXX" value="592-612-3456">
+        <p class="small">Send payment via <strong>MMG</strong> to:</p>
+        <div class="mmg-pay-box" style="margin:10px 0">
+          <div class="mmg-label">MMG number</div>
+          <div class="mmg-number">61214940</div>
+        </div>
+        <p class="small">After you pay, enter the <strong>transaction / reference code</strong> from MMG so we can verify your order.</p>
+        <input type="text" id="mmg-txid" placeholder="Your MMG transaction code" autocomplete="off">
       </div>
       <div id="bank-panel" class="pay-panel hidden">
         <p class="small">Transfer to The Gift Shop and use your order number as reference. We confirm within minutes.</p>
@@ -480,6 +490,11 @@
           </select>
         </div>
         <div class="form-group">
+          <label>Stock quantity (how many available)</label>
+          <input type="number" id="nd-stock" min="1" step="1" value="1" required>
+          <p class="small" style="margin-top:4px;color:var(--muted)">When sold out the deal is greyed out until you restock / reactivate.</p>
+        </div>
+        <div class="form-group">
           <label>Days active</label>
           <select id="nd-days">
             <option value="3">3 days</option>
@@ -508,23 +523,20 @@
       </p>
       <div class="mmg-pay-box">
         <div class="mmg-label">Send MMG to</div>
-        <div class="mmg-number">6124940</div>
+        <div class="mmg-number">61214940</div>
         <div class="mmg-amount">Amount: <strong>GYD 5,000</strong></div>
         <div class="mmg-ref">Reference: <span id="mmg-ref">TGS-SUB</span></div>
       </div>
       <div class="form-group">
-        <label>Your MMG phone number</label>
-        <input type="tel" id="sub-mmg-phone" placeholder="592-6XX-XXXX" value="592-">
-      </div>
-      <div class="form-group">
-        <label>Transaction ID / reference (from MMG)</label>
-        <input type="text" id="sub-mmg-txid" placeholder="e.g. MMG-12345678">
+        <label>MMG transaction / reference code</label>
+        <input type="text" id="sub-mmg-txid" placeholder="Code from your MMG payment" required>
+        <p class="small" style="margin-top:4px">Send GYD 5,000 to <strong>61214940</strong>, then enter the code MMG gives you.</p>
       </div>
       <button class="primary-btn" onclick="confirmSubscriptionPayment()">
         I’ve paid — Activate subscription
       </button>
       <p class="small" style="text-align:center;margin-top:10px;color:var(--muted)">
-        In production this is verified automatically with the MMG merchant API.
+        Keep your MMG receipt. Codes are checked against payments to 61214940.
       </p>
     </div>
   </div>
@@ -572,7 +584,7 @@
           <button class="primary-btn" id="sub-pay-btn" onclick="openSubscriptionPay()">
             Pay GYD 5,000 via MMG
           </button>
-          <p class="sub-mmg-note">MMG payments go to <strong>6124940</strong></p>
+          <p class="sub-mmg-note">MMG payments go to <strong>61214940</strong></p>
         </div>
 
 
@@ -590,6 +602,12 @@
               <button type="button" class="primary-btn small" style="margin-left:6px;background:#6b7280;color:#fff" onclick="clearBusinessLogo()">Remove</button>
             </div>
           </div>
+        </div>
+        <div class="card" style="margin-bottom:14px;padding:14px;background:#fff;border-radius:14px;border:1px solid #e5e7eb">
+          <h4 style="margin:0 0 8px">📍 Pickup address</h4>
+          <p class="small" style="margin-bottom:8px;color:var(--muted)">Where riders collect orders for your business.</p>
+          <input type="text" id="biz-pickup-address" placeholder="Street, area, Georgetown" style="width:100%;margin-bottom:8px">
+          <button type="button" class="primary-btn small" onclick="saveBizPickupAddress()">Save address</button>
         </div>
         <div class="stats-grid">
           <div class="stat-card">
@@ -634,7 +652,7 @@
         <p class="small" style="margin-bottom:12px">
           Run an ad on the customer app &amp; login screen.
           <strong>GYD 1,000 / day</strong> or <strong>GYD 5,000 / week</strong> —
-          pay via MMG to <strong>6124940</strong> before publishing.
+          pay via MMG to <strong>61214940</strong> before publishing.
         </p>
         <div id="biz-ad-list"></div>
       </div>
@@ -742,7 +760,7 @@
             <div><div class="lbl">Subscriptions</div><div class="val" id="mgr-rev-sub">GYD 0</div></div>
             <div><div class="lbl">Ads</div><div class="val" id="mgr-rev-ads">GYD 0</div></div>
             <div><div class="lbl">Total</div><div class="val" id="mgr-rev-total">GYD 0</div></div>
-            <div><div class="lbl">MMG</div><div class="val" style="font-size:14px">6124940</div></div>
+            <div><div class="lbl">MMG</div><div class="val" style="font-size:14px">61214940</div></div>
           </div>
         </div>
         <div class="stats-grid">
@@ -772,7 +790,7 @@
 
       <div id="mgr-payments" class="biz-panel">
         <h3>Payments &amp; subscribers</h3>
-        <p class="small" style="margin-bottom:12px">MMG <strong>6124940</strong> · Subscriptions GYD 5,000/mo · Ads GYD 1,000/day or 5,000/week</p>
+        <p class="small" style="margin-bottom:12px">MMG <strong>61214940</strong> · Subscriptions GYD 5,000/mo · Ads GYD 1,000/day or 5,000/week</p>
         <div class="revenue-card" style="margin-bottom:14px">
           <div class="sub-label">Ledger totals</div>
           <div class="revenue-grid">
@@ -871,7 +889,7 @@
         </div>
         <div class="mmg-pay-box">
           <div class="mmg-label">Pay via MMG to</div>
-          <div class="mmg-number">6124940</div>
+          <div class="mmg-number">61214940</div>
           <div class="mmg-amount">Amount: <strong id="biz-ad-amount">GYD 1,000</strong></div>
         </div>
         <div class="form-group">

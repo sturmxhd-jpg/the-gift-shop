@@ -2532,3 +2532,14 @@ img.gy-flag-lg {
   background: #22c55e;
   color: #fff;
 }
+
+.deal-card.sold-out {
+  opacity: 0.55;
+  filter: grayscale(0.85);
+  pointer-events: auto;
+  cursor: not-allowed;
+}
+.deal-card.sold-out .deal-badge.sold {
+  background: #6b7280;
+}
+.deal-img.has-photo .deal-emoji-fallback { display: none; }

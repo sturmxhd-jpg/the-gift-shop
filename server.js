@@ -37,6 +37,9 @@ const DATA_DIR = path.join(ROOT, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const PROOFS_FILE = path.join(DATA_DIR, 'proofs.json');
 const DEALS_FILE = path.join(DATA_DIR, 'deals.json');
+const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
+const ORDERS_FILE = path.join(DATA_DIR, 'orders.json');
+const META_FILE = path.join(DATA_DIR, 'meta.json');
 const OUTBOX_DIR = path.join(DATA_DIR, 'outbox');
 
 function ensureDataDirs() {
@@ -59,7 +62,22 @@ function saveJSON(file, data) {
 let users = loadJSON(USERS_FILE, []);
 let deliveryProofs = loadJSON(PROOFS_FILE, []);
 deals = loadJSON(DEALS_FILE, []);
+availableJobs = loadJSON(JOBS_FILE, []);
+// orders may already exist as let orders = []
+try { const o = loadJSON(ORDERS_FILE, null); if (Array.isArray(o)) { while (orders.length) orders.pop(); o.forEach(x => orders.push(x)); } } catch (_) {}
 function persistDeals() { saveJSON(DEALS_FILE, deals); }
+function persistJobs() { saveJSON(JOBS_FILE, availableJobs); }
+function persistOrders() { saveJSON(ORDERS_FILE, orders); }
+function persistAllData() {
+  persistUsers();
+  persistDeals();
+  persistJobs();
+  persistOrders();
+  persistProofs();
+  saveJSON(META_FILE, { lastSaved: new Date().toISOString(), users: users.length, deals: deals.length, jobs: availableJobs.length });
+}
+console.log('[Gift Shop] Loaded data: users=' + users.length + ' deals=' + deals.length + ' jobs=' + availableJobs.length);
+
 const passwordResetTokens = new Map(); // email -> { code, exp }
 
 function persistUsers() { saveJSON(USERS_FILE, users); }
@@ -408,6 +426,7 @@ async function handleAPI(req, res, pathname, query) {
           status: 'available'
         });
       }
+      if (typeof persistJobs === 'function') persistJobs();
       return sendJSON(res, 201, { success: true, jobs: availableJobs });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Invalid JSON' });
@@ -421,6 +440,7 @@ async function handleAPI(req, res, pathname, query) {
       const idx = availableJobs.findIndex(j => j.id === acceptMatch[1]);
       if (idx === -1) return sendJSON(res, 404, { error: 'Job not found' });
       const job = availableJobs.splice(idx, 1)[0];
+      if (typeof persistJobs === 'function') persistJobs();
       const rider = riders.find(r => r.id === (body.riderId || 'R1')) || riders[0];
       return sendJSON(res, 200, {
         success: true,
@@ -644,6 +664,7 @@ async function handleAPI(req, res, pathname, query) {
         phone: phone || '',
         email,
         businessName: body.businessName || null,
+        address: body.address || null,
         riderId: role === 'delivery' ? 'R' + uuid().slice(0, 4) : null,
         createdAt: new Date().toISOString()
       };
@@ -803,7 +824,7 @@ async function handleAPI(req, res, pathname, query) {
       paidUntil.setDate(paidUntil.getDate() + 30);
       const record = {
         amount: body.amount || 5000,
-        mmgTo: body.mmgTo || '6124940',
+        mmgTo: body.mmgTo || '61214940',
         mmgPhone: body.mmgPhone,
         txid: body.txid,
         reference: body.reference || null,
@@ -835,7 +856,34 @@ async function handleAPI(req, res, pathname, query) {
     });
   }
 
-  if (pathname === '/api/admin/users' && method === 'GET') {
+  
+  if (pathname === '/api/admin/backup' && method === 'GET') {
+    return sendJSON(res, 200, {
+      exportedAt: new Date().toISOString(),
+      users: users.map(u => ({ ...u, password: '***' })), // passwords redacted in export view
+      usersFull: users, // full restore payload for server admins only
+      deals,
+      jobs: availableJobs,
+      orders,
+      proofs: deliveryProofs
+    });
+  }
+
+  if (pathname === '/api/admin/restore' && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      if (body.usersFull && Array.isArray(body.usersFull)) { users = body.usersFull; persistUsers(); }
+      else if (body.users && Array.isArray(body.users)) { users = body.users; persistUsers(); }
+      if (body.deals && Array.isArray(body.deals)) { deals = body.deals; persistDeals(); }
+      if (body.jobs && Array.isArray(body.jobs)) { availableJobs = body.jobs; persistJobs(); }
+      if (body.orders && Array.isArray(body.orders)) { orders.length = 0; body.orders.forEach(x => orders.push(x)); persistOrders(); }
+      return sendJSON(res, 200, { success: true, counts: { users: users.length, deals: deals.length } });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Restore failed' });
+    }
+  }
+
+if (pathname === '/api/admin/users' && method === 'GET') {
     return sendJSON(res, 200, users.map(u => publicUser(u)));
   }
   if (pathname === '/api/admin/users' && method === 'POST') {

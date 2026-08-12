@@ -55,6 +55,7 @@ function registerLocalUser(payload) {
     phone: payload.phone || "",
     email: email,
     businessName: payload.businessName || null,
+    address: payload.address || null,
     riderId: role === "delivery" ? "R" + Date.now().toString(36) : null,
     createdAt: new Date().toISOString()
   };
@@ -109,14 +110,11 @@ function loadLiveDeals() {
 loadLiveDeals();
 // One-time purge of old demo data cached in the browser
 try {
+  // One-time demo cleanup ONLY — never removes login accounts (tgs_local_users / server users.json)
   if (!localStorage.getItem('tgs_clean_v1')) {
-    localStorage.removeItem('tgs_admin_users');
     localStorage.removeItem('tgs_platform_ads');
     localStorage.removeItem('tgs_activity');
     localStorage.removeItem('tgs_payments');
-    localStorage.removeItem('tgs_live_orders');
-    localStorage.removeItem('tgs_pod_history');
-    localStorage.removeItem('tgs_biz_deals');
     localStorage.removeItem('tgs_revenue');
     localStorage.setItem('tgs_clean_v1', '1');
   }
@@ -497,6 +495,7 @@ async function handleAuth(e) {
   const password = document.getElementById("auth-password").value;
   const name = document.getElementById("auth-name").value.trim();
   const businessName = document.getElementById("auth-business").value.trim();
+  const businessAddress = (document.getElementById("auth-address")?.value || "").trim();
   const emailField = document.getElementById("auth-email")?.value?.trim() || "";
   const phoneField = document.getElementById("auth-phone")?.value?.trim() || "";
 
@@ -759,13 +758,15 @@ function renderDeals(filter = 'all') {
   feed.innerHTML = filtered.map(d => {
     const logo = (typeof getBusinessLogo === 'function' && getBusinessLogo(d.business)) || d.businessLogo || null;
     const disc = d.discount || (d.original > d.price ? Math.round((1 - d.price / d.original) * 100) : 0);
+    const soldOut = d._soldOut || d.stock === 0 || d.status === 'Sold Out';
     const photoHtml = d.photo
       ? `<img class="deal-photo" src="${d.photo}" alt="${(d.title || '').replace(/"/g, '')}">`
       : `<span class="deal-emoji-fallback">${d.emoji || '🎁'}</span>`;
+    const stockLabel = soldOut ? 'Sold out' : ((d.stock != null) ? (d.stock + ' left') : '');
     return `
-    <div class="deal-card" onclick="openDeal(${typeof d.id === 'string' ? `'${d.id}'` : d.id})">
+    <div class="deal-card ${soldOut ? 'sold-out' : ''}" onclick="${soldOut ? 'showToast(\'This item is sold out\')' : 'openDeal(' + (typeof d.id === 'string' ? "'" + d.id + "'" : d.id) + ')'}">
       <div class="deal-img ${d.photo ? 'has-photo' : ''}">
-        <span class="deal-badge">-${disc}%</span>
+        ${soldOut ? '<span class="deal-badge sold">Sold out</span>' : `<span class="deal-badge">-${disc}%</span>`}
         ${photoHtml}
       </div>
       <div class="deal-body">
@@ -779,7 +780,7 @@ function renderDeals(filter = 'all') {
           <span class="deal-original">GYD ${(d.original || d.price || 0).toLocaleString()}</span>
         </div>
         <div class="deal-meta">
-          <span>${d.expires || ((d.daysLeft || 5) + ' days left')}</span>
+          <span>${stockLabel || d.expires || ((d.daysLeft || 5) + ' days left')}</span>
           <span>${d.distance || ''}</span>
         </div>
       </div>
@@ -902,6 +903,15 @@ function updateCartTotal() {
 }
 
 function placeOrder() {
+  const payMethod = window._payMethod || document.querySelector('.pay-method.active')?.dataset?.method || 'cod';
+  if (payMethod === 'mmg') {
+    const tx = document.getElementById('mmg-txid')?.value?.trim() || '';
+    if (tx.length < 4) {
+      showToast('Enter your MMG transaction code after paying to 61214940');
+      return;
+    }
+    window._lastMmgTx = tx;
+  }
   const isDelivery = document.querySelector('input[name="fulfillment"]:checked')?.value === 'delivery';
   
   if (isDelivery) {
@@ -958,9 +968,10 @@ document.querySelectorAll('.cat').forEach(btn => {
 
 // ===== NEW DEAL COMPOSER =====
 
-// ===== BUSINESS SUBSCRIPTION (GYD 5,000 / month via MMG 6124940) =====
+// ===== BUSINESS SUBSCRIPTION (GYD 5,000 / month via MMG 61214940) =====
+// Free: 1 free item listing per calendar month. Once that item is sold out, subscribe for 30 days.
 const SUB_FEE_GYD = 5000;
-const SUB_MMG_NUMBER = '6124940';
+const SUB_MMG_NUMBER = '61214940';
 const FREE_TRIAL_DAYS = 30;
 const FREE_MAX_DEALS = 1;
 const PAID_MAX_DEALS = 10;
@@ -973,7 +984,8 @@ function defaultSubscription() {
     plan: 'trial',           // trial | paid | expired
     trialStart: start.toISOString(),
     trialEnds: end.toISOString(),
-    dealsPosted: 0,          // user-posted during free/paid
+    dealsPosted: 0,
+    freeItemSold: false,     // free listing sold out → must subscribe
     paidUntil: null,
     lastPaymentRef: null
   };
@@ -1038,19 +1050,35 @@ function refreshSubscriptionStatus() {
 
 function canPostDeal() {
   const s = refreshSubscriptionStatus();
+  // Paid: full access up to 10 deals
   if (s.plan === 'paid') {
-    if (s.dealsPosted >= PAID_MAX_DEALS) {
-      return { ok: false, reason: 'Paid plan allows up to 10 deals this month. Limit reached — renew next month or contact support.' };
+    if ((s.dealsPosted || 0) >= PAID_MAX_DEALS) {
+      return { ok: false, reason: 'Paid plan allows up to 10 deals this month. Limit reached.' };
     }
     return { ok: true };
   }
+  // Free: one free item listing per month. Once that free item is sold, must subscribe.
   if (s.plan === 'trial') {
-    if (s.dealsPosted >= FREE_MAX_DEALS) {
-      return { ok: false, reason: 'Free plan allows only 1 deal. Subscribe for GYD 5,000/month via MMG (up to 10 deals).' };
+    if (s.freeItemSold) {
+      return { ok: false, reason: 'Your free item was sold. Subscribe GYD 5,000/mo via MMG to 61214940 for 30 days uninterrupted service.' };
+    }
+    if ((s.dealsPosted || 0) >= FREE_MAX_DEALS) {
+      return { ok: false, reason: 'Free plan: 1 item listing. Subscribe via MMG to 61214940 for more deals and 30 days full access.' };
     }
     return { ok: true };
   }
-  return { ok: false, reason: 'Your free month has ended. Pay GYD 5,000 via MMG to 6124940 to continue.' };
+  return { ok: false, reason: 'Subscribe GYD 5,000 via MMG to 61214940 to unlock 30 days of uninterrupted service.' };
+}
+
+function markFreeItemSoldIfNeeded() {
+  const s = bizSubscription;
+  if (s.plan === 'trial' && !s.freeItemSold) {
+    s.freeItemSold = true;
+    saveSubscription(s);
+    if (typeof logActivity === 'function') {
+      logActivity('sub', 'Free item sold — subscription required for continued posting');
+    }
+  }
 }
 
 function canAccessFullPortal() {
@@ -1087,13 +1115,14 @@ function updateSubscriptionUI() {
     if (label) label.textContent = 'Free trial';
     if (title) title.textContent = '1 deal · 30 days full access';
     if (desc) desc.innerHTML =
-      'Free plan: post <strong>1 deal</strong> and use the full portal for <strong>1 month</strong>. ' +
-      'After that, subscribe (GYD 5,000/mo via MMG) for up to <strong>10 deals</strong> plus orders & settlements.';
+      'Free: <strong>1 item listing</strong> per month. Once that item is <strong>sold</strong>, subscribe ' +
+      '(GYD 5,000 via MMG to <strong>61214940</strong>) for <strong>30 days</strong> uninterrupted service (up to 10 deals).';
     if (meta) meta.textContent =
-      'Trial ends in ' + daysLeft(s.trialEnds) + ' days · Deals used: ' + s.dealsPosted + ' / ' + FREE_MAX_DEALS;
+      (s.freeItemSold ? 'Free item sold — subscribe to continue · ' : '') +
+      'Deals listed: ' + (s.dealsPosted || 0) + ' / ' + FREE_MAX_DEALS;
     if (payBtn) {
       payBtn.style.display = 'block';
-      payBtn.textContent = 'Upgrade — Pay GYD 5,000 via MMG';
+      payBtn.textContent = s.freeItemSold ? 'Subscribe — Pay GYD 5,000 via MMG' : 'Upgrade early — Pay GYD 5,000 via MMG';
     }
   } else {
     card.classList.add('expired');
@@ -1102,7 +1131,7 @@ function updateSubscriptionUI() {
     if (title) title.textContent = 'Full access locked';
     if (desc) desc.innerHTML =
       'Your free month has ended. Pay <strong>GYD 5,000</strong> monthly via MMG to ' +
-      '<strong>6124940</strong> to post deals, receive orders, and view settlements.';
+      '<strong>61214940</strong> to post deals, receive orders, and view settlements.';
     if (meta) meta.textContent = 'Deals posted on free plan: ' + s.dealsPosted;
     if (payBtn) {
       payBtn.style.display = 'block';
@@ -1122,12 +1151,8 @@ function openSubscriptionPay() {
 async function confirmSubscriptionPayment() {
   const phone = document.getElementById('sub-mmg-phone')?.value?.trim() || '';
   const txid = document.getElementById('sub-mmg-txid')?.value?.trim() || '';
-  if (phone.length < 7) {
-    showToast('Enter the MMG phone number you paid from');
-    return;
-  }
   if (txid.length < 4) {
-    showToast('Enter the MMG transaction ID / reference');
+    showToast('Enter the MMG transaction code from your payment to 61214940');
     return;
   }
 
@@ -1161,7 +1186,7 @@ async function confirmSubscriptionPayment() {
   renderBusiness();
   if (typeof logPayment === 'function') {
     logPayment('subscription', SUB_FEE_GYD, 'Business monthly subscription via MMG', {
-      mmg: '6124940', business: (currentUser && currentUser.businessName) || ''
+      mmg: '61214940', business: (currentUser && currentUser.businessName) || ''
     });
   } else {
     platformRevenue.subscriptions = (platformRevenue.subscriptions || 0) + SUB_FEE_GYD;
@@ -1222,6 +1247,7 @@ function openNewDealModal() {
   document.getElementById('nd-modal-title').textContent = 'Post a New Deal';
   document.getElementById('nd-submit-btn').textContent = 'Publish Deal';
   document.getElementById('nd-title').value = '';
+  if (document.getElementById('nd-stock')) document.getElementById('nd-stock').value = '1';
   document.getElementById('nd-desc').value = '';
   document.getElementById('nd-price').value = '';
   document.getElementById('nd-original').value = '';
@@ -1240,6 +1266,7 @@ function editDeal(id) {
   document.getElementById('nd-modal-title').textContent = 'Edit Deal';
   document.getElementById('nd-submit-btn').textContent = 'Save Changes';
   document.getElementById('nd-title').value = d.title || '';
+  if (document.getElementById('nd-stock')) document.getElementById('nd-stock').value = String(d.stock != null ? d.stock : 1);
   document.getElementById('nd-desc').value = d.description || '';
   document.getElementById('nd-price').value = d.price || '';
   document.getElementById('nd-original').value = d.original || '';
@@ -1310,6 +1337,7 @@ async function submitNewDeal(e) {
   const category = document.getElementById('nd-category').value;
   const daysLeft = parseInt(document.getElementById('nd-days').value, 10);
   const emoji = document.getElementById('nd-emoji').value.trim() || '🎁';
+  const stock = Math.max(1, parseInt(document.getElementById('nd-stock')?.value, 10) || 1);
   const editId = document.getElementById('nd-edit-id').value || editingDealId;
 
   if (!title || !price || price < 100) {
@@ -1332,6 +1360,8 @@ async function submitNewDeal(e) {
       d.category = category;
       d.daysLeft = daysLeft;
       d.emoji = emoji;
+      d.stock = stock;
+      if (stock > 0 && d.status === 'Sold Out') d.status = 'Active';
       if (photo) d.photo = photo;
       // Sync to customer feed (create if missing)
       let cd = (typeof deals !== 'undefined' && d.customerDealId)
@@ -1353,9 +1383,10 @@ async function submitNewDeal(e) {
         cd.title = title; cd.description = description; cd.price = price;
         cd.original = original; cd.discount = discount; cd.category = category;
         cd.daysLeft = daysLeft; cd.emoji = emoji; cd.business = bizName;
+        cd.stock = stock; cd._soldOut = stock <= 0;
         if (photo) cd.photo = photo;
         else if (d.photo) cd.photo = d.photo;
-        cd._paused = d.status !== 'Active';
+        cd._paused = d.status !== 'Active' || stock <= 0;
       }
       if (typeof saveLiveDeals === 'function') saveLiveDeals();
       if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
@@ -1386,6 +1417,7 @@ async function submitNewDeal(e) {
     original,
     status: 'Active',
     redemptions: 0,
+    stock,
     photo: photo || null,
     emoji,
     description,
@@ -1411,6 +1443,8 @@ async function submitNewDeal(e) {
     distance: '1.0 km',
     delivery: true,
     photo: photo || null,
+    stock,
+    _soldOut: false,
     _paused: false
   };
   if (typeof deals !== 'undefined') deals.unshift(customerDeal);
@@ -1445,6 +1479,10 @@ function renderBusiness() {
   if (typeof renderBizAds === "function") renderBizAds();
   if (typeof updateBizLogoPreview === "function") updateBizLogoPreview();
   const fullAccess = canAccessFullPortal();
+  const addrEl = document.getElementById('biz-pickup-address');
+  if (addrEl && currentUser) {
+    addrEl.value = currentUser.address || localStorage.getItem('tgs_biz_address_' + (currentUser.identifier || 'biz')) || '';
+  }
 
   // Live stats from real data only (no sample numbers)
   const activeCount = businessDeals.filter(d => d.status === 'Active').length;
@@ -1481,7 +1519,7 @@ function renderBusiness() {
       ordersPanel.innerHTML = `<div class="locked-panel">
         <div style="font-size:28px">🔒</div>
         <strong>Orders locked</strong>
-        <p>Subscribe for GYD 5,000/month via MMG to <strong>6124940</strong> to receive and manage orders.</p>
+        <p>Subscribe for GYD 5,000/month via MMG to <strong>61214940</strong> to receive and manage orders.</p>
         <button class="primary-btn" onclick="openSubscriptionPay()">Pay via MMG</button>
       </div>`;
     } else {
@@ -1493,7 +1531,7 @@ function renderBusiness() {
       settlePanel.innerHTML = `<div class="locked-panel">
         <div style="font-size:28px">🔒</div>
         <strong>Settlements locked</strong>
-        <p>Pay the monthly fee (GYD 5,000 via MMG <strong>6124940</strong>) to view payouts and settlement statements.</p>
+        <p>Pay the monthly fee (GYD 5,000 via MMG <strong>61214940</strong>) to view payouts and settlement statements.</p>
         <button class="primary-btn" onclick="openSubscriptionPay()">Pay via MMG</button>
       </div>`;
     } else {
@@ -1510,7 +1548,7 @@ function renderBusiness() {
           : `<div class="deal-thumb" style="display:flex;align-items:center;justify-content:center;font-size:22px">${d.emoji || '🎁'}</div>`}
         <div class="deal-info">
           <h4>${d.title}</h4>
-          <div class="meta">GYD ${d.price.toLocaleString()} · ${d.redemptions || 0} redemptions</div>
+          <div class="meta">GYD ${d.price.toLocaleString()} · Stock: ${d.stock != null ? d.stock : '—'} · ${d.redemptions || 0} sold</div>
           <span class="status-pill ${d.status === 'Active' ? 'active' : 'pending'}">${d.status}</span>
         </div>
       </div>
@@ -1518,7 +1556,9 @@ function renderBusiness() {
         <button type="button" class="btn-edit" onclick="editDeal('${d.id}')">✏️ Edit</button>
         ${d.status === 'Active'
           ? `<button type="button" class="btn-pause" onclick="pauseDeal('${d.id}')">⏸ Pause</button>`
-          : `<button type="button" class="btn-resume" onclick="resumeDeal('${d.id}')">▶ Resume</button>`}
+          : (d.status === 'Sold Out'
+            ? `<button type="button" class="btn-resume" onclick="reactivateDeal('${d.id}')">↻ Restock</button>`
+            : `<button type="button" class="btn-resume" onclick="resumeDeal('${d.id}')">▶ Resume</button>`)}
       </div>
     </div>
   `).join('');
@@ -1851,16 +1891,31 @@ function acceptOrder(id) {
   document.getElementById('rider-' + id)?.remove();
   activeOrderDest = { lat: order.lat || 6.812, lng: order.lng || -58.155 };
 
+  window._activeRiderJob = order;
+  order.status = 'accepted';
+  if (!order.pickupAddress && typeof getBusinessPickupAddress === 'function') {
+    order.pickupAddress = getBusinessPickupAddress(order.business);
+  }
+  if (typeof saveRiderOrders === 'function') saveRiderOrders();
+
   document.getElementById('active-delivery').className = 'active-card has-order';
   document.getElementById('active-delivery').innerHTML = `
     <h4 style="margin-bottom:6px">${order.item}</h4>
     <p class="rider-meta" style="margin-bottom:8px">${order.business} · Earn GYD ${order.fee}</p>
     
+    <div class="customer-contact" style="background:#fef3c7;border-radius:10px;padding:10px;margin-bottom:8px">
+      <strong>🏪 Pickup at business</strong>
+      <div>📍 ${order.pickupAddress || order.business || 'Business address'}</div>
+      <a class="btn-nav" style="display:inline-block;margin-top:6px" href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(order.pickupAddress || order.business || 'Georgetown Guyana')}&travelmode=driving" target="_blank">🗺️ Google Maps to pickup</a>
+    </div>
+    
     <div class="customer-contact">
-      <strong>👤 ${order.customer || 'Customer'}</strong>
+      <strong>👤 Deliver to ${order.customer || 'Customer'}</strong>
       <div>📍 ${order.address}</div>
       <div>📞 ${order.phone || '—'}</div>
     </div>
+
+    <button type="button" class="primary-btn pickup-btn" style="margin:8px 0" onclick="markOrderPickedUp('${order.id}')">✅ Mark picked up — on the way</button>
     
     <div class="rider-map-wrap">
       <div id="rider-live-map" class="gps-map"></div>
@@ -2670,7 +2725,7 @@ function renderManager() {
       <div class="mgr-row">
         <h4>${u.businessName || u.name}</h4>
         <div class="meta">${u.email || u.identifier || ''} · Paid until ${u.paidUntil ? new Date(u.paidUntil).toLocaleDateString() : '—'}</div>
-        <div class="meta"><strong>Recurring · GYD 5,000 / month via MMG 6124940</strong></div>
+        <div class="meta"><strong>Recurring · GYD 5,000 / month via MMG 61214940</strong></div>
       </div>
     `).join('') : '<p class="small">No active paid subscribers yet</p>';
   }
@@ -2932,7 +2987,7 @@ function submitBizAd(e) {
 
   if (typeof logPayment === 'function') {
     logPayment('ad', amount, 'Business ad (' + days + ' day(s)) via MMG', {
-      mmg: '6124940', business: bizName, headline
+      mmg: '61214940', business: bizName, headline
     });
   } else {
     platformRevenue.ads = (platformRevenue.ads || 0) + amount;
@@ -2991,8 +3046,9 @@ function pauseBizAd(id) {
 
 
 // ===== LIVE DELIVERY STATUS (customer) =====
-const DELIVERY_STEPS = ['confirmed', 'preparing', 'accepted', 'on_the_way', 'delivered'];
+const DELIVERY_STEPS = ['confirmed','preparing','accepted','picked_up','on_the_way','delivered'];
 const STEP_LABELS = {
+  picked_up: 'Picked up — on the way',
   confirmed: 'Order confirmed',
   preparing: 'Business is preparing',
   accepted: 'Rider accepted your order',
@@ -3047,13 +3103,16 @@ function createLiveOrder(payload) {
   if (typeof saveIncomingOrders === 'function') saveIncomingOrders();
 
   // Rider portal — real delivery job (all available riders can accept)
+  const bizName = payload.business || (cart && cart[0] && (cart[0].business || cart[0].store)) || 'Business';
+  const pickupAddress = payload.pickupAddress || (typeof getBusinessPickupAddress === 'function' ? getBusinessPickupAddress(bizName) : '') || '';
   const job = {
     id,
-    business: payload.business || (cart && cart[0] && (cart[0].business || cart[0].store)) || 'Business',
+    business: bizName,
     item,
     address: payload.address || '',
     phone: payload.phone || '',
     customer: customerName,
+    pickupAddress,
     fee: Math.max(400, Math.round((payload.total || 0) * 0.08)),
     distance: '—',
     lat: 6.812,
@@ -3091,6 +3150,7 @@ function createLiveOrder(payload) {
   setTimeout(() => {
     updateLiveOrderStatus(id, 'preparing');
   }, 4000);
+  if (typeof decreaseStockForCart === 'function') decreaseStockForCart();
   updateLiveTrackBanner();
   renderCustomerOrders();
   return order;
@@ -3471,3 +3531,129 @@ try {
     setTimeout(() => toggleAutoRefresh(true), 800);
   }
 } catch (_) {}
+
+function decreaseStockForCart() {
+  if (!cart || !cart.length) return;
+  cart.forEach(item => {
+    const qty = item.qty || 1;
+    const deal = deals.find(d => String(d.id) === String(item.id) || d.title === item.title);
+    if (deal) {
+      const prev = deal.stock != null ? deal.stock : 1;
+      deal.stock = Math.max(0, prev - qty);
+      if (deal.stock <= 0) {
+        deal._soldOut = true;
+        deal._paused = true;
+      }
+      // Sync business deal
+      const bd = businessDeals.find(b => b.customerDealId === deal.id || b.title === deal.title);
+      if (bd) {
+        bd.stock = deal.stock;
+        bd.redemptions = (bd.redemptions || 0) + qty;
+        if (deal.stock <= 0) bd.status = 'Sold Out';
+      }
+      if (deal.stock <= 0 && typeof markFreeItemSoldIfNeeded === 'function') {
+        markFreeItemSoldIfNeeded();
+      }
+    }
+  });
+  if (typeof saveLiveDeals === 'function') saveLiveDeals();
+  if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
+  if (typeof renderDeals === 'function') {
+    renderDeals(document.querySelector('.cat.active')?.dataset?.cat || 'all');
+  }
+}
+
+function saveBizPickupAddress() {
+  const v = document.getElementById('biz-pickup-address')?.value?.trim() || '';
+  if (!v) { showToast('Enter a pickup address'); return; }
+  if (currentUser) {
+    currentUser.address = v;
+    try { localStorage.setItem('tgs_user', JSON.stringify(currentUser)); } catch (_) {}
+  }
+  try { localStorage.setItem('tgs_biz_address_' + ((currentUser && currentUser.identifier) || 'biz'), v); } catch (_) {}
+  if (typeof adminUsers !== 'undefined' && currentUser) {
+    const u = adminUsers.find(x => x.identifier === currentUser.identifier || x.email === currentUser.email);
+    if (u) { u.address = v; if (typeof saveAdminUsers === 'function') saveAdminUsers(); }
+  }
+  showToast('Pickup address saved');
+}
+
+function getBusinessPickupAddress(businessName) {
+  if (currentUser && currentUser.role === 'business' && currentUser.address) return currentUser.address;
+  try {
+    if (currentUser) {
+      const a = localStorage.getItem('tgs_biz_address_' + (currentUser.identifier || 'biz'));
+      if (a) return a;
+    }
+  } catch (_) {}
+  if (typeof adminUsers !== 'undefined') {
+    const u = adminUsers.find(x => x.role === 'business' && (x.businessName === businessName || x.name === businessName));
+    if (u && u.address) return u.address;
+  }
+  return businessName ? (businessName + ' — address on file') : 'Business pickup point';
+}
+
+function reactivateDeal(id) {
+  const d = businessDeals.find(x => x.id === id);
+  if (!d) return;
+  const stock = Math.max(1, parseInt(prompt('Restock quantity?', String(d.stock || 1)), 10) || 1);
+  d.stock = stock;
+  d.status = 'Active';
+  if (typeof deals !== 'undefined' && d.customerDealId) {
+    const cd = deals.find(x => x.id === d.customerDealId);
+    if (cd) {
+      cd.stock = stock;
+      cd._soldOut = false;
+      cd._paused = false;
+    }
+  }
+  if (typeof saveLiveDeals === 'function') saveLiveDeals();
+  if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
+  renderBusiness();
+  if (typeof renderDeals === 'function') renderDeals(document.querySelector('.cat.active')?.dataset?.cat || 'all');
+  showToast('Deal reactivated with stock ' + stock);
+}
+
+/** Rider marks picked up at business */
+function markOrderPickedUp(orderId) {
+  const job = riderOrders.find(o => o.id === orderId) || window._activeRiderJob;
+  if (!job) return;
+  job.status = 'picked_up';
+  job.pickedUpAt = new Date().toISOString();
+  if (typeof saveRiderOrders === 'function') saveRiderOrders();
+  if (typeof updateLiveOrderStatus === 'function') {
+    updateLiveOrderStatus(orderId, 'picked_up', {
+      rider: assignedRider || (currentUser && { name: currentUser.name, phone: currentUser.phone })
+    });
+  }
+  showToast('Picked up — on the way to customer');
+  // Open Google Maps directions to customer
+  const dest = encodeURIComponent(job.address || 'Georgetown Guyana');
+  const origin = encodeURIComponent(job.pickupAddress || getBusinessPickupAddress(job.business) || 'Georgetown');
+  window.open('https://www.google.com/maps/dir/?api=1&origin=' + origin + '&destination=' + dest + '&travelmode=driving', '_blank');
+  if (typeof renderRider === 'function') renderRider();
+  // Update active card
+  const active = document.getElementById('active-delivery');
+  if (active && active.classList.contains('has-order')) {
+    const pu = active.querySelector('.pickup-btn');
+    if (pu) {
+      pu.textContent = 'On the way — navigate to customer';
+      pu.onclick = () => window.open('https://www.google.com/maps/dir/?api=1&destination=' + dest + '&travelmode=driving', '_blank');
+    }
+  }
+}
+
+/** Keep logins alive across app updates — server data/ is source of truth */
+function restoreSessionSafely() {
+  try {
+    const raw = localStorage.getItem('tgs_user');
+    if (!raw) return;
+    const user = JSON.parse(raw);
+    if (!user || !user.role) return;
+    // Manager is hardcoded — only restore non-manager sessions from storage
+    if (user.role === 'manager') return;
+    currentUser = user;
+  } catch (_) {}
+}
+
+// Prefer server account when signing in (already default). Local list is offline backup only.
