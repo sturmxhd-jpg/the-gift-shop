@@ -5,21 +5,76 @@ const API_BASE = (typeof location !== "undefined" && location.origin && !locatio
   : "";
 
 async function api(path, options = {}) {
-  if (!API_BASE) return null; // opened as file:// — stay offline
+  // Prefer same origin; fall back to localhost when opened oddly
+  const base = API_BASE || (typeof location !== "undefined" && location.protocol && location.protocol !== "file:"
+    ? location.origin
+    : "http://127.0.0.1:3000");
   try {
-    const res = await fetch(API_BASE + path, {
+    const res = await fetch(base + path, {
       headers: { "Content-Type": "application/json", ...(options.headers || {}) },
       ...options
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || res.statusText);
+      return { success: false, error: data.error || res.statusText || "Request failed", status: res.status };
     }
-    return await res.json();
+    return data;
   } catch (e) {
     console.warn("API offline or error:", e.message);
-    return null;
+    return { success: false, error: e.message || "Network error", offline: true };
   }
+}
+
+/** Local account store when server is offline */
+function loadLocalUsers() {
+  try { return JSON.parse(localStorage.getItem("tgs_local_users") || "[]"); } catch (_) { return []; }
+}
+function saveLocalUsers(list) {
+  try { localStorage.setItem("tgs_local_users", JSON.stringify(list)); } catch (_) {}
+}
+function registerLocalUser(payload) {
+  const list = loadLocalUsers();
+  const email = (payload.email || "").toLowerCase();
+  const identifier = (payload.identifier || email).toLowerCase();
+  if (list.find(u =>
+    (u.email && u.email.toLowerCase() === email) ||
+    (u.identifier && u.identifier.toLowerCase() === identifier)
+  )) {
+    return { success: false, error: "Account already exists — please sign in" };
+  }
+  const user = {
+    id: "L" + Date.now(),
+    identifier: payload.identifier || email,
+    password: payload.password,
+    name: payload.name,
+    role: payload.role || "customer",
+    phone: payload.phone || "",
+    email: email,
+    businessName: payload.businessName || null,
+    riderId: payload.role === "delivery" ? "R" + Date.now().toString(36) : null,
+    createdAt: new Date().toISOString()
+  };
+  list.push(user);
+  saveLocalUsers(list);
+  const { password, ...pub } = user;
+  return { success: true, user: pub, emailSent: false, emailQueued: false, local: true };
+}
+function loginLocalUser(identifier, password, role) {
+  const id = (identifier || "").toLowerCase();
+  const list = loadLocalUsers();
+  const user = list.find(u =>
+    u.password === password && (
+      (u.identifier && u.identifier.toLowerCase() === id) ||
+      (u.email && u.email.toLowerCase() === id) ||
+      (u.phone && u.phone.replace(/\s|-/g, "") === id.replace(/\s|-/g, ""))
+    )
+  );
+  if (!user) return { success: false, error: "Invalid email/phone or password" };
+  if (role && user.role !== role) {
+    return { success: false, error: "This account is registered as " + user.role };
+  }
+  const { password: _p, ...pub } = user;
+  return { success: true, user: pub, local: true };
 }
 
 // ===== SAMPLE DATA =====
@@ -180,12 +235,7 @@ let pendingRole = null;
 let authMode = "signin";
 let currentUser = null;
 
-const DEMO_USERS = {
-  customer: { identifier: "592-612-3456", password: "giftshop", name: "Aaliyah Rodrigues", role: "customer", phone: "592-612-3456", email: "aaliyah@example.gy" },
-  business: { identifier: "island@breeze.gy", password: "giftshop", name: "Rohan Persaud", role: "business", businessName: "Island Breeze Restaurant", phone: "592-225-1001", email: "island@breeze.gy" },
-  delivery: { identifier: "592-671-8801", password: "giftshop", name: "Marcus D.", role: "delivery", phone: "592-671-8801", email: "marcus.rider@giftshop.gy", riderId: "R1" },
-  manager: { identifier: "admin@giftshop.gy", password: "giftshop", name: "Platform Manager", role: "manager", phone: "592-612-4940", email: "admin@giftshop.gy" }
-};
+const DEMO_USERS = {}; // production: no demo accounts
 
 // Platform ads managed by Manager
 let platformAds = [
@@ -340,12 +390,63 @@ function syncManagerWithLiveApp() {
 
 let selectedAdPlan = 'day'; // day = 1000, week = 5000
 
-let adminUsers = [
-  { id: "U1", name: "Aaliyah Rodrigues", identifier: "592-612-3456", role: "customer", phone: "592-612-3456", password: "giftshop", subscription: "n/a" },
-  { id: "U2", name: "Rohan Persaud", identifier: "island@breeze.gy", role: "business", businessName: "Island Breeze Restaurant", phone: "592-225-1001", password: "giftshop", subscription: "trial", paidUntil: null },
-  { id: "U3", name: "Marcus D.", identifier: "592-671-8801", role: "delivery", phone: "592-671-8801", password: "giftshop", riderId: "R1", subscription: "n/a" },
-  { id: "U4", name: "Platform Manager", identifier: "admin@giftshop.gy", role: "manager", phone: "592-612-4940", password: "giftshop" }
-];
+// STRICT manager portal credentials — only these may access Manager
+const MANAGER_USERNAME = 'raulkc';
+const MANAGER_PASSWORD = 'tiromini';
+
+let platformActivity = [];
+try {
+  const pa = localStorage.getItem('tgs_activity');
+  if (pa) platformActivity = JSON.parse(pa);
+} catch (_) {}
+function saveActivity() {
+  try { localStorage.setItem('tgs_activity', JSON.stringify(platformActivity.slice(0, 300))); } catch (_) {}
+}
+function logActivity(type, message, meta) {
+  platformActivity.unshift({
+    id: 'ACT' + Date.now(),
+    type: type || 'info',
+    message: message || '',
+    meta: meta || {},
+    at: new Date().toISOString()
+  });
+  saveActivity();
+}
+
+let paymentLedger = [];
+try {
+  const pl = localStorage.getItem('tgs_payments');
+  if (pl) paymentLedger = JSON.parse(pl);
+} catch (_) {}
+function savePayments() {
+  try { localStorage.setItem('tgs_payments', JSON.stringify(paymentLedger.slice(0, 300))); } catch (_) {}
+}
+function logPayment(kind, amount, detail, meta) {
+  paymentLedger.unshift({
+    id: 'PAY' + Date.now(),
+    kind, // subscription | ad
+    amount: amount || 0,
+    detail: detail || '',
+    meta: meta || {},
+    at: new Date().toISOString()
+  });
+  savePayments();
+  if (kind === 'subscription') {
+    platformRevenue.subscriptions = (platformRevenue.subscriptions || 0) + (amount || 0);
+  } else if (kind === 'ad') {
+    platformRevenue.ads = (platformRevenue.ads || 0) + (amount || 0);
+  }
+  if (typeof saveRevenue === 'function') saveRevenue();
+}
+
+let adminUsers = [];
+try {
+  const au = localStorage.getItem('tgs_admin_users');
+  if (au) adminUsers = JSON.parse(au);
+} catch (_) {}
+function saveAdminUsers() {
+  try { localStorage.setItem('tgs_admin_users', JSON.stringify(adminUsers)); } catch (_) {}
+}
 
 function startLogin(role) {
   pendingRole = role;
@@ -359,7 +460,7 @@ function startLogin(role) {
     customer: ["Customer sign in", "Browse deals & place orders"],
     business: ["Business sign in", "Manage deals & settlements"],
     delivery: ["Rider sign in", "Accept & deliver orders"],
-    manager: ["Manager sign in", "Admin portal — ads, users & businesses"]
+    manager: ["Manager sign in", "Authorized access only"]
   };
   const t = titles[role] || ["Sign in", "Welcome"];
   document.getElementById("login-role-title").textContent = t[0];
@@ -368,6 +469,21 @@ function startLogin(role) {
   document.getElementById("business-group").style.display = role === "business" && authMode === "signup" ? "block" : "none";
   document.getElementById("auth-identifier").value = "";
   document.getElementById("auth-password").value = "";
+  const idInput = document.getElementById("auth-identifier");
+  const idLabel = document.getElementById("auth-id-label");
+  if (role === "manager") {
+    if (idLabel) idLabel.textContent = "Username";
+    if (idInput) idInput.placeholder = "Manager username";
+    setAuthMode("signin");
+    // Hide create account for manager
+    document.querySelectorAll(".login-tab").forEach(t => {
+      if (t.dataset.mode === "signup") t.style.display = "none";
+    });
+  } else {
+    if (idLabel) idLabel.textContent = "Email or phone";
+    if (idInput) idInput.placeholder = "you@email.com or 592-6XX-XXXX";
+    document.querySelectorAll(".login-tab").forEach(t => { t.style.display = ""; });
+  }
   document.getElementById("auth-name").value = "";
   document.getElementById("auth-business").value = "";
 }
@@ -378,26 +494,40 @@ function backToRoles() {
   document.getElementById("role-selector").classList.add("active");
 }
 
+function syncEmailToIdentifier() {
+  const em = document.getElementById("auth-email");
+  const id = document.getElementById("auth-identifier");
+  if (em && id && authMode === "signup" && em.value.trim() && !id.value.trim()) {
+    id.value = em.value.trim();
+  }
+}
+
 function setAuthMode(mode) {
   authMode = mode;
   document.querySelectorAll(".login-tab").forEach(t => {
     t.classList.toggle("active", t.dataset.mode === mode);
   });
-  document.getElementById("name-group").style.display = mode === "signup" ? "block" : "none";
+  const isSignup = mode === "signup";
+  document.getElementById("name-group").style.display = isSignup ? "block" : "none";
   document.getElementById("business-group").style.display =
-    (mode === "signup" && pendingRole === "business") ? "block" : "none";
-  document.getElementById("auth-submit").textContent = mode === "signup" ? "Create account" : "Sign in";
+    (isSignup && pendingRole === "business") ? "block" : "none";
+  const phoneG = document.getElementById("phone-group");
+  const emailG = document.getElementById("email-group");
+  const hint = document.getElementById("signup-email-hint");
+  const idLabel = document.getElementById("auth-id-label");
+  if (phoneG) phoneG.style.display = isSignup ? "block" : "none";
+  if (emailG) emailG.style.display = isSignup ? "block" : "none";
+  if (hint) hint.style.display = isSignup ? "block" : "none";
+  if (idLabel) idLabel.textContent = isSignup ? "Login email (same as above or phone)" : "Email or phone";
+  const idInput = document.getElementById("auth-identifier");
+  if (idInput) idInput.placeholder = isSignup ? "Same email or your phone" : "you@email.com or 592-6XX-XXXX";
+  document.getElementById("auth-submit").textContent = isSignup ? "Create account" : "Sign in";
+  const pw = document.getElementById("auth-password");
+  if (pw) pw.placeholder = isSignup ? "Create a secure password (min 6)" : "Your password";
 }
 
 function fillDemo(role) {
-  const u = DEMO_USERS[role];
-  if (!u) return;
-  pendingRole = role;
-  document.getElementById("auth-identifier").value = u.identifier;
-  document.getElementById("auth-password").value = u.password;
-  document.getElementById("login-role-title").textContent =
-    role === "customer" ? "Customer sign in" : role === "business" ? "Business sign in" : "Rider sign in";
-  showToast("Demo credentials filled — tap Sign in");
+  showToast('Demo accounts removed. Please create your own account.');
 }
 
 async function handleAuth(e) {
@@ -406,54 +536,145 @@ async function handleAuth(e) {
   const password = document.getElementById("auth-password").value;
   const name = document.getElementById("auth-name").value.trim();
   const businessName = document.getElementById("auth-business").value.trim();
+  const emailField = document.getElementById("auth-email")?.value?.trim() || "";
+  const phoneField = document.getElementById("auth-phone")?.value?.trim() || "";
 
-  if (!identifier || !password) {
-    showToast("Enter phone/email and password");
+  if (!password) {
+    showToast("Enter your password");
     return false;
   }
-  if (authMode === "signup" && !name) {
-    showToast("Please enter your name");
+  if (!identifier && !(document.getElementById("auth-email")?.value?.trim())) {
+    showToast("Enter your email address");
+    return false;
+  }
+  if (password.length < 6) {
+    showToast("Password must be at least 6 characters");
     return false;
   }
 
-  // Try backend first
+  // Manager portal: ONLY username raulkc / password tiromini
+  if (pendingRole === "manager") {
+    if (authMode === "signup") {
+      showToast("Manager accounts cannot be created. Contact platform owner.");
+      return false;
+    }
+    const userOk = identifier.toLowerCase() === MANAGER_USERNAME.toLowerCase();
+    const passOk = password === MANAGER_PASSWORD;
+    if (!userOk || !passOk) {
+      showToast("Access denied. Invalid manager credentials.");
+      return false;
+    }
+    const user = {
+      id: "MGR-OWNER",
+      identifier: MANAGER_USERNAME,
+      name: "Platform Manager",
+      role: "manager",
+      email: "",
+      phone: ""
+    };
+    currentUser = user;
+    try { localStorage.setItem("tgs_user", JSON.stringify(user)); } catch (_) {}
+    showToast("Welcome, Manager");
+    enterApp("manager");
+    return false;
+  }
+
+  if (authMode === "signup") {
+    if (!name) {
+      showToast("Please enter your full name");
+      return false;
+    }
+    const email = emailField || (identifier.includes("@") ? identifier : "");
+    if (!email || !email.includes("@")) {
+      showToast("Email is required so we can send your login details");
+      return false;
+    }
+    if (pendingRole === "business" && !businessName) {
+      showToast("Please enter your business name");
+      return false;
+    }
+  }
+
+  // Prefer dedicated email field; allow identifier to be email
+  let email = emailField || (identifier.includes("@") ? identifier : "");
+  const phone = phoneField || (!identifier.includes("@") ? identifier : "");
+  // If user only filled the Email field, use it as identifier
+  let loginId = identifier || email;
+  if (!loginId && email) loginId = email;
+  if (authMode === "signup" && !email && loginId.includes("@")) email = loginId;
+
+  if (authMode === "signup" && (!email || !email.includes("@"))) {
+    showToast("Enter a valid email address");
+    return false;
+  }
+
   let user = null;
   const path = authMode === "signup" ? "/api/auth/register" : "/api/auth/login";
   const body = {
-    identifier, password, role: pendingRole || "customer",
+    identifier: email || loginId,
+    password,
+    role: pendingRole || "customer",
     name: name || undefined,
-    businessName: businessName || undefined
+    businessName: businessName || undefined,
+    email: email || undefined,
+    phone: phone || undefined
   };
-  const apiResult = await api(path, { method: "POST", body: JSON.stringify(body) });
+
+  let apiResult = await api(path, { method: "POST", body: JSON.stringify(body) });
+
+  // Offline / server down → local accounts still work
+  if (!apiResult || apiResult.offline || (apiResult.success === false && !apiResult.error)) {
+    if (authMode === "signup") {
+      apiResult = registerLocalUser(body);
+    } else {
+      apiResult = loginLocalUser(email || loginId, password, pendingRole || "customer");
+    }
+  } else if (apiResult && apiResult.success === false && apiResult.offline) {
+    if (authMode === "signup") apiResult = registerLocalUser(body);
+    else apiResult = loginLocalUser(email || loginId, password, pendingRole || "customer");
+  }
 
   if (apiResult && apiResult.success) {
     user = apiResult.user;
-  } else {
-    // Offline / demo fallback
-    const demo = Object.values(DEMO_USERS).find(
-      u => u.identifier.toLowerCase() === identifier.toLowerCase() && u.password === password
-    );
-    if (demo) {
-      user = { ...demo, id: "demo-" + demo.role };
-    } else if (authMode === "signup") {
-      user = {
-        id: "local-" + Date.now(),
-        identifier, name: name || "User",
-        role: pendingRole || "customer",
-        phone: identifier.includes("@") ? "" : identifier,
-        email: identifier.includes("@") ? identifier : "",
-        businessName: businessName || null
-      };
+    if (authMode === "signup") {
+      showToast(apiResult.emailSent
+        ? "Account created! Check your email for login details."
+        : (apiResult.local
+          ? "Account created! You can sign in with your email and password."
+          : "Account created! Confirmation email queued."));
     } else {
-      showToast(apiResult?.error || "Invalid credentials. Try a demo account.");
-      return false;
+      showToast("Welcome, " + (user.name || "there") + "!");
+    }
+  } else {
+    showToast((apiResult && apiResult.error) || (authMode === "signup" ? "Could not create account" : "Invalid email/phone or password"));
+    return false;
+  }
+
+  // Sync into manager directory
+  if (user && typeof adminUsers !== "undefined") {
+    const exists = adminUsers.find(u => u.identifier === user.identifier || u.email === user.email);
+    if (!exists) {
+      adminUsers.push({
+        id: user.id,
+        name: user.name,
+        identifier: user.identifier || user.email,
+        role: user.role,
+        phone: user.phone || "",
+        email: user.email || "",
+        businessName: user.businessName,
+        subscription: user.role === "business" ? "trial" : "n/a"
+      });
+      if (typeof saveAdminUsers === "function") saveAdminUsers();
     }
   }
 
   currentUser = user;
   try { localStorage.setItem("tgs_user", JSON.stringify(user)); } catch (_) {}
-  showToast("Welcome, " + (user.name || "there") + "!");
+  if (authMode === "signup" && typeof logActivity === "function") {
+    logActivity("signup", (user.role || "user") + " signed up: " + (user.name || user.email), { role: user.role, email: user.email });
+  }
   enterApp(user.role || pendingRole || "customer");
+  if (user.role === "delivery" && typeof loadPodHistory === "function") loadPodHistory();
   return false;
 }
 
@@ -475,10 +696,20 @@ function enterApp(role) {
     document.getElementById("delivery-app").classList.add("active");
     if (typeof renderRider === "function") renderRider();
     updateHeaderUser();
+    if (typeof loadPodHistory === "function") loadPodHistory();
   } else if (role === "manager") {
+    const ok = currentUser && (
+      currentUser.identifier === MANAGER_USERNAME ||
+      (currentUser.role === "manager" && currentUser.id === "MGR-OWNER")
+    );
+    if (!ok) {
+      showToast("Manager access denied");
+      document.getElementById("role-selector").classList.add("active");
+      return;
+    }
     document.getElementById("manager-app").classList.add("active");
     const lbl = document.getElementById("mgr-user-label");
-    if (lbl && currentUser) lbl.textContent = currentUser.name || "Admin";
+    if (lbl) lbl.textContent = "raulkc";
     renderManager();
   } else {
     document.getElementById("role-selector").classList.add("active");
@@ -924,8 +1155,17 @@ async function confirmSubscriptionPayment() {
   closeModal();
   updateSubscriptionUI();
   renderBusiness();
-  platformRevenue.subscriptions = (platformRevenue.subscriptions || 0) + SUB_FEE_GYD;
-  saveRevenue();
+  if (typeof logPayment === 'function') {
+    logPayment('subscription', SUB_FEE_GYD, 'Business monthly subscription via MMG', {
+      mmg: '6124940', business: (currentUser && currentUser.businessName) || ''
+    });
+  } else {
+    platformRevenue.subscriptions = (platformRevenue.subscriptions || 0) + SUB_FEE_GYD;
+    saveRevenue();
+  }
+  if (typeof logActivity === 'function') {
+    logActivity('payment', 'Subscription paid GYD ' + SUB_FEE_GYD, { kind: 'subscription' });
+  }
   // Mark current business user as subscribed in admin list
   if (currentUser && currentUser.role === 'business') {
     const u = adminUsers.find(x => x.identifier === currentUser.identifier || x.id === currentUser.id);
@@ -1662,20 +1902,58 @@ function cancelPod() {
   `;
 }
 
-function confirmPod() {
+async function confirmPod() {
   if (!podPhotoData) {
     showToast('Please take a proof-of-delivery photo first');
     return;
   }
   const notes = document.getElementById('pod-notes')?.value || '';
-  
-  // Store for customer view
+  const live = typeof getActiveLiveOrder === 'function' ? getActiveLiveOrder() : null;
+  const orderId = (window.lastDelivery && window.lastDelivery.orderId) || (live && live.id) || ('DEL-' + Date.now());
+  const customerEmail = (live && live.customerEmail) || (window.lastDelivery && window.lastDelivery.customerEmail) || '';
+  const customerName = (live && live.customerName) || '';
+  const address = (live && live.address) || (window.lastDelivery && window.lastDelivery.address) || 'Delivery address';
+  const riderId = (currentUser && (currentUser.id || currentUser.riderId)) || 'rider';
+  const riderName = (currentUser && currentUser.name) || 'Rider';
+
   window.lastPod = {
     photo: podPhotoData,
     notes: notes,
     time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    address: activeOrderDest ? 'Delivery location' : ''
+    address: address,
+    orderId: orderId
   };
+
+  // Persist proof on server for rider history + email customer
+  const payload = {
+    orderId,
+    riderId,
+    riderName,
+    customerEmail,
+    customerName,
+    address,
+    notes,
+    photoDataUrl: podPhotoData,
+    deliveredAt: new Date().toISOString()
+  };
+  let saved = null;
+  if (typeof api === 'function') {
+    saved = await api('/api/proofs', { method: 'POST', body: JSON.stringify(payload) });
+  }
+  // Local backup for rider device
+  try {
+    const key = 'tgs_pod_history';
+    const list = JSON.parse(localStorage.getItem(key) || '[]');
+    list.unshift({
+      id: (saved && saved.proof && saved.proof.id) || ('POD-' + Date.now()),
+      orderId, address, notes, photo: podPhotoData,
+      time: window.lastPod.time, deliveredAt: payload.deliveredAt,
+      emailSent: !!(saved && saved.emailSent)
+    });
+    localStorage.setItem(key, JSON.stringify(list.slice(0, 50)));
+  } catch (_) {}
+
+  if (typeof notifyCustomerDelivered === 'function') notifyCustomerDelivered(orderId);
 
   stopRiderGPS();
   activeOrderDest = null;
@@ -1688,25 +1966,24 @@ function confirmPod() {
     <div style="text-align:center;padding:8px 0">
       <div style="font-size:36px;margin-bottom:6px">✅</div>
       <strong>Delivery complete</strong>
-      <p class="small" style="margin-top:6px">Proof of delivery saved</p>
+      <p class="small" style="margin-top:6px">Proof saved${saved && saved.emailSent ? ' · emailed to customer' : ' · on file for your records'}</p>
     </div>
   `;
-  showToast('Delivery confirmed with photo 📸');
-  // Prompt customer to rate if tracking modal is open
+  showToast(saved && saved.emailSent
+    ? 'Delivery confirmed — proof emailed to customer 📧'
+    : 'Delivery confirmed — proof saved for your records 📸');
+  if (typeof loadPodHistory === 'function') loadPodHistory();
+
   setTimeout(() => {
     if (document.getElementById('tracking-modal')?.classList.contains('active')) {
       showRiderRatingUI();
     }
   }, 500);
-  
-  // Optionally show POD on customer tracking if open
+
   setTimeout(() => {
     const track = document.getElementById('tracking-modal');
     if (track) {
-      // Update status steps
-      const steps = track.querySelectorAll('.status-step');
-      steps.forEach(s => s.classList.add('active'));
-      // Inject POD into tracking modal
+      if (typeof setTrackStatusSteps === 'function') setTrackStatusSteps('delivered');
       let podBox = document.getElementById('pod-customer-view');
       if (!podBox) {
         podBox = document.createElement('div');
@@ -1724,6 +2001,36 @@ function confirmPod() {
     }
   }, 300);
 }
+
+async function loadPodHistory() {
+  const el = document.getElementById('pod-history');
+  if (!el) return;
+  let list = [];
+  const riderId = currentUser && (currentUser.id || currentUser.riderId);
+  if (typeof api === 'function' && riderId) {
+    const res = await api('/api/proofs?riderId=' + encodeURIComponent(riderId));
+    if (res && res.proofs) list = res.proofs;
+  }
+  if (!list.length) {
+    try { list = JSON.parse(localStorage.getItem('tgs_pod_history') || '[]'); } catch (_) { list = []; }
+  }
+  if (!list.length) {
+    el.innerHTML = '<p class="small" style="color:var(--muted)">No delivery proofs yet. They appear here after you complete a delivery with a photo.</p>';
+    return;
+  }
+  el.innerHTML = list.map(p => `
+    <div class="pod-history-card">
+      <img src="${p.photoUrl || p.photo || ''}" alt="POD" onerror="this.style.display='none'">
+      <div>
+        <strong>${p.orderId || 'Delivery'}</strong>
+        <div class="meta">${p.address || ''}</div>
+        <div class="meta">${p.deliveredAt ? new Date(p.deliveredAt).toLocaleString() : (p.time || '')}</div>
+        ${p.notes ? `<div class="meta">📝 ${p.notes}</div>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
 
 
 // When customer tracking modal opens, init map
@@ -2125,7 +2432,7 @@ function applyPlatformAds() {
 
 function showMgrTab(tab) {
   document.querySelectorAll('.mgr-tabs .biz-tab').forEach(t => t.classList.toggle('active', t.dataset.mgr === tab));
-  ['overview','ads','businesses','customers','riders'].forEach(id => {
+  ['overview','activity','payments','reports','ads','businesses','customers','riders'].forEach(id => {
     const el = document.getElementById('mgr-' + id);
     if (el) el.classList.toggle('active', id === tab);
   });
@@ -2241,6 +2548,101 @@ function renderManager() {
   renderUserList('business', 'mgr-biz-list');
   renderUserList('customer', 'mgr-cust-list');
   renderUserList('delivery', 'mgr-rider-list');
+
+  // Activity feed
+  const actList = document.getElementById('mgr-activity-list');
+  if (actList) {
+    const items = platformActivity.length ? platformActivity : [
+      { type: 'info', message: 'No activity yet — sign-ups, payments and ads will appear here.', at: new Date().toISOString() }
+    ];
+    actList.innerHTML = items.slice(0, 80).map(a => `
+      <div class="activity-item">
+        <strong>${(a.type || 'info').toUpperCase()}</strong> · ${a.message}
+        <div class="small">${a.at ? new Date(a.at).toLocaleString() : ''}</div>
+      </div>
+    `).join('');
+  }
+
+  // Payments & subscribers
+  const fmt2 = n => 'GYD ' + (n || 0).toLocaleString();
+  const set2 = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set2('mgr-pay-sub', fmt2(platformRevenue.subscriptions));
+  set2('mgr-pay-ads', fmt2(platformRevenue.ads));
+  set2('mgr-pay-total', fmt2((platformRevenue.subscriptions || 0) + (platformRevenue.ads || 0)));
+  const paidSubs = adminUsers.filter(u => u.role === 'business' && u.subscription === 'paid');
+  set2('mgr-pay-recurring', String(paidSubs.length));
+
+  const subList = document.getElementById('mgr-subscribers-list');
+  if (subList) {
+    subList.innerHTML = paidSubs.length ? paidSubs.map(u => `
+      <div class="mgr-row">
+        <h4>${u.businessName || u.name}</h4>
+        <div class="meta">${u.email || u.identifier || ''} · Paid until ${u.paidUntil ? new Date(u.paidUntil).toLocaleDateString() : '—'}</div>
+        <div class="meta"><strong>Recurring · GYD 5,000 / month via MMG 6124940</strong></div>
+      </div>
+    `).join('') : '<p class="small">No active paid subscribers yet</p>';
+  }
+
+  const payList = document.getElementById('mgr-payments-list');
+  if (payList) {
+    payList.innerHTML = paymentLedger.length ? paymentLedger.slice(0, 50).map(p => `
+      <div class="mgr-row">
+        <h4>${p.kind === 'subscription' ? '🔄 Subscription' : '📢 Ad placement'}</h4>
+        <div class="meta">${p.detail || ''}</div>
+        <div class="meta"><strong>GYD ${(p.amount || 0).toLocaleString()}</strong> · ${p.at ? new Date(p.at).toLocaleString() : ''}</div>
+      </div>
+    `).join('') : '<p class="small">No payment transactions recorded yet</p>';
+  }
+
+  // Daily & monthly reports
+  const now = new Date();
+  const dayKey = (d) => new Date(d).toDateString();
+  const monthKey = (d) => new Date(d).getFullYear() + '-' + String(new Date(d).getMonth() + 1).padStart(2, '0');
+  const today = now.toDateString();
+  const thisMonth = monthKey(now);
+
+  const paysToday = paymentLedger.filter(p => p.at && dayKey(p.at) === today);
+  const paysMonth = paymentLedger.filter(p => p.at && monthKey(p.at) === thisMonth);
+  const sum = (arr) => arr.reduce((s, p) => s + (p.amount || 0), 0);
+  const signupsToday = platformActivity.filter(a => a.type === 'signup' && a.at && dayKey(a.at) === today).length;
+  const ordersToday = (typeof customerLiveOrders !== 'undefined' ? customerLiveOrders : []).filter(o => o.createdAt && dayKey(o.createdAt) === today).length;
+
+  set2('mgr-rep-today', fmt2(sum(paysToday)));
+  set2('mgr-rep-month', fmt2(sum(paysMonth)));
+  set2('mgr-rep-signups', String(signupsToday));
+  set2('mgr-rep-orders', String(ordersToday));
+
+  const dailyEl = document.getElementById('mgr-daily-report');
+  if (dailyEl) {
+    dailyEl.innerHTML = `
+      <div class="activity-item">📅 <strong>Today</strong> · ${today}</div>
+      <div class="activity-item">💰 Income: <strong>${fmt2(sum(paysToday))}</strong> (${paysToday.length} payments)</div>
+      <div class="activity-item">🔄 Subscriptions today: ${paysToday.filter(p => p.kind === 'subscription').length}</div>
+      <div class="activity-item">📢 Ad placements today: ${paysToday.filter(p => p.kind === 'ad').length}</div>
+      <div class="activity-item">👤 New sign-ups: ${signupsToday}</div>
+      <div class="activity-item">📦 Orders placed: ${ordersToday}</div>
+      <div class="activity-item">🏪 Businesses total: ${biz.length} · Paid recurring: ${paidSubs.length}</div>
+      <div class="activity-item">🛵 Riders: ${ridersList.length} · Customers: ${cust.length}</div>
+    `;
+  }
+
+  const monthlyEl = document.getElementById('mgr-monthly-report');
+  if (monthlyEl) {
+    const subM = paysMonth.filter(p => p.kind === 'subscription');
+    const adM = paysMonth.filter(p => p.kind === 'ad');
+    const signupsMonth = platformActivity.filter(a => a.type === 'signup' && a.at && monthKey(a.at) === thisMonth).length;
+    monthlyEl.innerHTML = `
+      <div class="activity-item">🗓 <strong>Month</strong> · ${thisMonth}</div>
+      <div class="activity-item">💰 Total income: <strong>${fmt2(sum(paysMonth))}</strong></div>
+      <div class="activity-item">🔄 Subscription revenue: <strong>${fmt2(sum(subM))}</strong> (${subM.length} payments)</div>
+      <div class="activity-item">📢 Ad revenue: <strong>${fmt2(sum(adM))}</strong> (${adM.length} placements)</div>
+      <div class="activity-item">👤 Sign-ups this month: ${signupsMonth}</div>
+      <div class="activity-item">📊 Active paid subscribers: ${paidSubs.length}</div>
+      <div class="activity-item">📢 Active ads: ${adsActive.length}</div>
+      <div class="activity-item">📦 Live deals in feed: ${liveDeals.length}</div>
+    `;
+  }
+
   applyPlatformAds();
 }
 
@@ -2436,8 +2838,17 @@ function submitBizAd(e) {
     ends: ad.ends
   });
 
-  platformRevenue.ads = (platformRevenue.ads || 0) + amount;
-  saveRevenue();
+  if (typeof logPayment === 'function') {
+    logPayment('ad', amount, 'Business ad (' + days + ' day(s)) via MMG', {
+      mmg: '6124940', business: bizName, headline
+    });
+  } else {
+    platformRevenue.ads = (platformRevenue.ads || 0) + amount;
+    saveRevenue();
+  }
+  if (typeof logActivity === 'function') {
+    logActivity('ad', 'Ad published: ' + headline + ' (GYD ' + amount + ')', { business: bizName });
+  }
 
   closeModal();
   renderBizAds();
@@ -2517,6 +2928,8 @@ function createLiveOrder(payload) {
     total: payload.total || 0,
     address: payload.address || '',
     phone: payload.phone || '',
+    customerEmail: payload.customerEmail || (currentUser && currentUser.email) || '',
+    customerName: payload.customerName || (currentUser && currentUser.name) || '',
     status: 'confirmed', // confirmed | preparing | accepted | on_the_way | delivered
     rider: null,
     createdAt: new Date().toISOString()
@@ -2639,3 +3052,9 @@ function notifyCustomerDelivered(orderId) {
   updateLiveOrderStatus(o.id, 'delivered');
 }
 
+
+// Keep signup email ↔ login id in sync
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("auth-email")?.addEventListener("blur", syncEmailToIdentifier);
+  document.getElementById("auth-email")?.addEventListener("change", syncEmailToIdentifier);
+});

@@ -2377,3 +2377,35 @@ img.gy-flag-lg {
 }
 .live-track-banner.hidden { display: none !important; }
 .live-track-banner .banner-arrow { margin-left: auto; font-size: 16px; }
+
+/* POD history (rider) */
+.pod-history-list { margin-bottom: 24px; }
+.pod-history-card {
+  display: flex;
+  gap: 12px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.pod-history-card img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex-shrink: 0;
+  background: #f3f4f6;
+}
+.pod-history-card .meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.login-note {
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 16px;
+  line-height: 1.4;
+}

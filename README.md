@@ -35,3 +35,20 @@ See **[DEPLOY_AND_WIX.md](./DEPLOY_AND_WIX.md)** for:
 - Frontend: HTML / CSS / JS  
 - Backend: Node.js (`server.js`)  
 - Payments (demo): MMG to **6124940**
+
+
+## Production notes
+
+### Accounts
+No demo logins. Users register with **email**; confirmation email includes login details for safekeeping.
+
+### Email
+```bash
+export RESEND_API_KEY=re_xxxxxxxx
+export MAIL_FROM="The Gift Shop <noreply@yourdomain.com>"
+node server.js
+```
+Without a key, emails are written to `data/outbox/`.
+
+### Proof of delivery
+Stored in `data/proofs/`; riders can re-open them under **Delivery proofs**. Customer receives the photo by email when configured.

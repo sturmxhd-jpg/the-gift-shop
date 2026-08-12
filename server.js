@@ -11,6 +11,8 @@ const { URL } = require('url');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
+const MANAGER_USERNAME = 'raulkc';
+const MANAGER_PASSWORD = 'tiromini';
 const ROOT = __dirname;
 
 function uuid() {
@@ -45,12 +47,110 @@ let availableJobs = [
 ];
 
 
-const users = [
-  { id: 'U1', identifier: '592-612-3456', password: 'giftshop', name: 'Aaliyah Rodrigues', role: 'customer', phone: '592-612-3456', email: 'aaliyah@example.gy' },
-  { id: 'U2', identifier: 'island@breeze.gy', password: 'giftshop', name: 'Rohan Persaud', role: 'business', businessName: 'Island Breeze Restaurant', phone: '592-225-1001', email: 'island@breeze.gy' },
-  { id: 'U3', identifier: '592-671-8801', password: 'giftshop', name: 'Marcus D.', role: 'delivery', phone: '592-671-8801', email: 'marcus.rider@giftshop.gy', riderId: 'R1' },
-  { id: 'U4', identifier: 'admin@giftshop.gy', password: 'giftshop', name: 'Platform Manager', role: 'manager', phone: '592-612-4940', email: 'admin@giftshop.gy' }
-];
+// Persistent storage (users + delivery proofs)
+const DATA_DIR = path.join(ROOT, 'data');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const PROOFS_FILE = path.join(DATA_DIR, 'proofs.json');
+const OUTBOX_DIR = path.join(DATA_DIR, 'outbox');
+
+function ensureDataDirs() {
+  [DATA_DIR, OUTBOX_DIR, path.join(DATA_DIR, 'proofs')].forEach(d => {
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+  });
+}
+ensureDataDirs();
+
+function loadJSON(file, fallback) {
+  try {
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) { console.warn('loadJSON', file, e.message); }
+  return fallback;
+}
+function saveJSON(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+}
+
+let users = loadJSON(USERS_FILE, []);
+let deliveryProofs = loadJSON(PROOFS_FILE, []);
+
+function persistUsers() { saveJSON(USERS_FILE, users); }
+function persistProofs() { saveJSON(PROOFS_FILE, deliveryProofs); }
+
+/** Send email: uses RESEND_API_KEY if set, otherwise writes to data/outbox for review */
+async function sendEmail({ to, subject, text, html, attachments }) {
+  const from = process.env.MAIL_FROM || 'The Gift Shop <noreply@thegiftshop.gy>';
+  const record = {
+    id: 'MAIL-' + Date.now(),
+    to, subject, text, html: html || null,
+    attachments: (attachments || []).map(a => ({ filename: a.filename, contentType: a.contentType })),
+    createdAt: new Date().toISOString(),
+    status: 'queued'
+  };
+
+  const apiKey = process.env.RESEND_API_KEY;
+  if (apiKey && to) {
+    try {
+      const payload = {
+        from,
+        to: [to],
+        subject,
+        text,
+        html: html || undefined
+      };
+      if (attachments && attachments.length) {
+        payload.attachments = attachments.map(a => ({
+          filename: a.filename,
+          content: a.contentBase64
+        }));
+      }
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + apiKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+      const body = await res.json().catch(() => ({}));
+      record.status = res.ok ? 'sent' : 'failed';
+      record.provider = 'resend';
+      record.response = body;
+      fs.writeFileSync(path.join(OUTBOX_DIR, record.id + '.json'), JSON.stringify(record, null, 2));
+      console.log('[email]', record.status, to, subject);
+      return { sent: res.ok, record };
+    } catch (e) {
+      record.status = 'failed';
+      record.error = e.message;
+      fs.writeFileSync(path.join(OUTBOX_DIR, record.id + '.json'), JSON.stringify(record, null, 2));
+      return { sent: false, record };
+    }
+  }
+
+  // No API key: save to outbox (production: set RESEND_API_KEY)
+  record.status = 'outbox';
+  // Store attachment refs separately if huge
+  const outPath = path.join(OUTBOX_DIR, record.id + '.json');
+  const toWrite = { ...record };
+  if (attachments && attachments.length) {
+    toWrite.attachmentFiles = [];
+    attachments.forEach((a, i) => {
+      const fname = record.id + '_' + (a.filename || ('file' + i));
+      const fpath = path.join(OUTBOX_DIR, fname);
+      if (a.contentBase64) {
+        fs.writeFileSync(fpath, Buffer.from(a.contentBase64, 'base64'));
+        toWrite.attachmentFiles.push(fname);
+      }
+    });
+  }
+  fs.writeFileSync(outPath, JSON.stringify(toWrite, null, 2));
+  console.log('[email:outbox]', to, subject, '→', outPath);
+  return { sent: false, queued: true, record };
+}
+
+function isEmail(s) {
+  return typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
 
 function publicUser(u) {
   const { password, ...rest } = u;
@@ -105,6 +205,7 @@ function readBody(req) {
 }
 
 function serveStatic(req, res, pathname) {
+  // Allow serving stored proof images
   let filePath = path.join(ROOT, pathname === '/' ? 'index.html' : pathname);
   // Prevent path traversal
   if (!filePath.startsWith(ROOT)) {
@@ -366,8 +467,29 @@ async function handleAPI(req, res, pathname, query) {
       const body = await readBody(req);
       const id = (body.identifier || '').trim().toLowerCase();
       const password = body.password || '';
-      const user = users.find(u => u.identifier.toLowerCase() === id && u.password === password);
-      if (!user) return sendJSON(res, 401, { error: 'Invalid phone/email or password' });
+
+      // Manager portal: ONLY raulkc / tiromini
+      if (body.role === 'manager') {
+        if (id === MANAGER_USERNAME.toLowerCase() && password === MANAGER_PASSWORD) {
+          return sendJSON(res, 200, {
+            success: true,
+            user: { id: 'MGR-OWNER', identifier: MANAGER_USERNAME, name: 'Platform Manager', role: 'manager' }
+          });
+        }
+        return sendJSON(res, 403, { error: 'Access denied. Invalid manager credentials.' });
+      }
+
+      const user = users.find(u =>
+        (u.identifier && u.identifier.toLowerCase() === id) ||
+        (u.email && u.email.toLowerCase() === id) ||
+        (u.phone && u.phone.replace(/\s|-/g, '') === id.replace(/\s|-/g, ''))
+      );
+      if (!user || user.password !== password) {
+        return sendJSON(res, 401, { error: 'Invalid email/phone or password' });
+      }
+      if (user.role === 'manager') {
+        return sendJSON(res, 403, { error: 'Access denied' });
+      }
       if (body.role && user.role !== body.role) {
         return sendJSON(res, 403, { error: 'This account is registered as ' + user.role });
       }
@@ -380,32 +502,171 @@ async function handleAPI(req, res, pathname, query) {
   if (pathname === '/api/auth/register' && method === 'POST') {
     try {
       const body = await readBody(req);
-      const identifier = (body.identifier || '').trim();
-      const password = body.password || '';
       const name = (body.name || '').trim();
+      const password = body.password || '';
       const role = body.role || 'customer';
-      if (!identifier || !password || !name) {
-        return sendJSON(res, 400, { error: 'Name, phone/email and password required' });
+      if (role === 'manager') {
+        return sendJSON(res, 403, { error: 'Manager accounts cannot be registered' });
       }
-      if (users.find(u => u.identifier.toLowerCase() === identifier.toLowerCase())) {
+      const email = (body.email || (body.identifier && String(body.identifier).includes('@') ? body.identifier : '') || '').trim().toLowerCase();
+      const phone = (body.phone || '').trim();
+      const identifier = (body.identifier || email || phone).trim();
+
+      if (!name || !password || password.length < 6) {
+        return sendJSON(res, 400, { error: 'Name and password (min 6 characters) required' });
+      }
+      if (!isEmail(email)) {
+        return sendJSON(res, 400, { error: 'A valid email is required — we send your login details there for safekeeping' });
+      }
+      if (role === 'business' && !(body.businessName || '').trim()) {
+        return sendJSON(res, 400, { error: 'Business name required' });
+      }
+      if (users.find(u =>
+        (u.email && u.email.toLowerCase() === email) ||
+        (u.identifier && u.identifier.toLowerCase() === identifier.toLowerCase())
+      )) {
         return sendJSON(res, 409, { error: 'Account already exists — please sign in' });
       }
+
       const user = {
         id: 'U' + uuid(),
-        identifier,
+        identifier: email,
         password,
         name,
         role,
-        phone: identifier.includes('@') ? '' : identifier,
-        email: identifier.includes('@') ? identifier : '',
+        phone: phone || '',
+        email,
         businessName: body.businessName || null,
-        riderId: role === 'delivery' ? 'R' + uuid().slice(0, 2) : null
+        riderId: role === 'delivery' ? 'R' + uuid().slice(0, 4) : null,
+        createdAt: new Date().toISOString()
       };
       users.push(user);
-      return sendJSON(res, 201, { success: true, user: publicUser(user) });
+      persistUsers();
+
+      const roleLabel = role === 'business' ? 'Business' : role === 'delivery' ? 'Delivery partner' : role === 'manager' ? 'Manager' : 'Customer';
+      const mailText =
+        'Welcome to The Gift Shop, ' + name + '!\n\n' +
+        'Your account was created successfully. Keep this email for your records.\n\n' +
+        'Role: ' + roleLabel + '\n' +
+        'Login email: ' + email + '\n' +
+        (phone ? 'Phone: ' + phone + '\n' : '') +
+        (user.businessName ? 'Business: ' + user.businessName + '\n' : '') +
+        'Password: the password you chose when you signed up (we never send passwords in plain text after this welcome note if you change it later).\n\n' +
+        'Sign in any time at The Gift Shop app with your email and password.\n\n' +
+        '— The Gift Shop (Guyana)\n';
+
+      const mailResult = await sendEmail({
+        to: email,
+        subject: 'Your The Gift Shop login details',
+        text: mailText,
+        html: '<p>Welcome to <strong>The Gift Shop</strong>, ' + name + '!</p>' +
+          '<p>Your account was created. Keep this email for safekeeping.</p>' +
+          '<ul><li><strong>Role:</strong> ' + roleLabel + '</li>' +
+          '<li><strong>Login email:</strong> ' + email + '</li>' +
+          (phone ? '<li><strong>Phone:</strong> ' + phone + '</li>' : '') +
+          '</ul><p>Sign in with the password you created.</p><p>— The Gift Shop (Guyana)</p>'
+      });
+
+      return sendJSON(res, 201, {
+        success: true,
+        user: publicUser(user),
+        emailSent: !!(mailResult && mailResult.sent),
+        emailQueued: !!(mailResult && mailResult.queued)
+      });
     } catch (e) {
+      console.error(e);
       return sendJSON(res, 400, { error: 'Invalid JSON' });
     }
+  }
+
+  // Proof of delivery — store + optional email to customer
+  if (pathname === '/api/proofs' && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      if (!body.photoDataUrl) return sendJSON(res, 400, { error: 'photoDataUrl required' });
+      const id = 'POD-' + uuid();
+      let photoUrl = null;
+      // Save image file if data URL
+      if (String(body.photoDataUrl).startsWith('data:image')) {
+        const m = body.photoDataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+        if (m) {
+          const ext = m[1].split('/')[1] === 'jpeg' ? 'jpg' : m[1].split('/')[1];
+          const fname = id + '.' + ext;
+          const fpath = path.join(DATA_DIR, 'proofs', fname);
+          fs.writeFileSync(fpath, Buffer.from(m[2], 'base64'));
+          photoUrl = '/data/proofs/' + fname;
+        }
+      }
+      const proof = {
+        id,
+        orderId: body.orderId || null,
+        riderId: body.riderId || null,
+        riderName: body.riderName || null,
+        customerEmail: body.customerEmail || null,
+        customerName: body.customerName || null,
+        address: body.address || null,
+        notes: body.notes || '',
+        photoUrl,
+        // keep small reference only in index; full image on disk
+        deliveredAt: body.deliveredAt || new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+      deliveryProofs.unshift(proof);
+      if (deliveryProofs.length > 500) deliveryProofs = deliveryProofs.slice(0, 500);
+      persistProofs();
+
+      let emailSent = false;
+      if (isEmail(body.customerEmail)) {
+        const attachments = [];
+        if (photoUrl) {
+          const fpath = path.join(ROOT, photoUrl.replace(/^\//, ''));
+          if (fs.existsSync(fpath)) {
+            attachments.push({
+              filename: 'proof-of-delivery.jpg',
+              contentType: 'image/jpeg',
+              contentBase64: fs.readFileSync(fpath).toString('base64')
+            });
+          }
+        }
+        const mail = await sendEmail({
+          to: body.customerEmail,
+          subject: 'Delivery proof — The Gift Shop order ' + (body.orderId || ''),
+          text: 'Your order was delivered.\n\nOrder: ' + (body.orderId || '') +
+            '\nAddress: ' + (body.address || '') +
+            '\nRider: ' + (body.riderName || '') +
+            (body.notes ? '\nNotes: ' + body.notes : '') +
+            '\n\nProof of delivery photo is attached when email delivery is configured.\n— The Gift Shop',
+          html: '<p>Your order was <strong>delivered</strong>.</p>' +
+            '<p>Order: ' + (body.orderId || '') + '<br>Address: ' + (body.address || '') +
+            '<br>Rider: ' + (body.riderName || '') + '</p>' +
+            (body.notes ? '<p>Notes: ' + body.notes + '</p>' : '') +
+            '<p>— The Gift Shop (Guyana)</p>',
+          attachments
+        });
+        emailSent = !!(mail && mail.sent);
+        proof.emailSent = emailSent;
+        proof.emailQueued = !!(mail && mail.queued);
+        persistProofs();
+      }
+
+      return sendJSON(res, 201, { success: true, proof, emailSent });
+    } catch (e) {
+      console.error(e);
+      return sendJSON(res, 400, { error: 'Invalid request' });
+    }
+  }
+
+  if (pathname === '/api/proofs' && method === 'GET') {
+    const riderId = query.riderId;
+    let list = deliveryProofs;
+    if (riderId) list = list.filter(p => p.riderId === riderId);
+    // include photo as path; client loads URL
+    return sendJSON(res, 200, {
+      proofs: list.map(p => ({
+        ...p,
+        photo: p.photoUrl // alias for UI
+      }))
+    });
   }
 
 

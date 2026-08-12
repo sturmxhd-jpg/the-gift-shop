@@ -45,7 +45,7 @@
           <span class="role-desc">Admin: ads, users & businesses</span>
         </button>
       </div>
-      <p class="prototype-note">Interactive prototype • Sample data for Georgetown, Guyana</p>
+      <p class="prototype-note">The Gift Shop · Georgetown, Guyana — create your account to get started</p>
     </div>
   </div>
 
@@ -78,31 +78,34 @@
       <form id="login-form" class="login-form" onsubmit="return handleAuth(event)">
         <div class="form-group" id="name-group" style="display:none">
           <label>Full name</label>
-          <input type="text" id="auth-name" placeholder="e.g. Aaliyah Rodrigues" autocomplete="name">
+          <input type="text" id="auth-name" placeholder="Your full name" autocomplete="name">
+        </div>
+        <div class="form-group" id="email-group">
+          <label>Email address</label>
+          <input type="email" id="auth-email" placeholder="you@email.com" autocomplete="email">
         </div>
         <div class="form-group">
-          <label>Phone or email</label>
-          <input type="text" id="auth-identifier" placeholder="592-6XX-XXXX or you@email.com" autocomplete="username" required>
+          <label id="auth-id-label">Email or phone</label>
+          <input type="text" id="auth-identifier" placeholder="you@email.com or 592-6XX-XXXX" autocomplete="username">
+        </div>
+        <div class="form-group" id="phone-group" style="display:none">
+          <label>Phone number</label>
+          <input type="tel" id="auth-phone" placeholder="592-6XX-XXXX" autocomplete="tel">
         </div>
         <div class="form-group">
           <label>Password</label>
-          <input type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password" required>
+          <input type="password" id="auth-password" placeholder="Create a secure password" autocomplete="current-password" required minlength="6">
         </div>
         <div class="form-group" id="business-group" style="display:none">
           <label>Business name</label>
-          <input type="text" id="auth-business" placeholder="e.g. Island Breeze Restaurant">
+          <input type="text" id="auth-business" placeholder="Your business name">
         </div>
+        <p class="small" id="signup-email-hint" style="display:none;margin-bottom:10px;color:var(--muted)">
+          On sign-up we email your login details to the address you provide for safekeeping.
+        </p>
         <button type="submit" class="primary-btn" id="auth-submit">Sign in</button>
       </form>
-
-      <div class="demo-accounts">
-        <p class="small">Demo accounts (tap to fill)</p>
-        <button type="button" class="demo-chip" onclick="fillDemo('customer')">Customer · 592-612-3456</button>
-        <button type="button" class="demo-chip" onclick="fillDemo('business')">Business · island@breeze.gy</button>
-        <button type="button" class="demo-chip" onclick="fillDemo('delivery')">Rider · 592-671-8801</button>
-        <button type="button" class="demo-chip" onclick="fillDemo('manager')">Manager · admin@giftshop.gy</button>
-      </div>
-      <p class="login-note">Password for all demos: <strong>giftshop</strong></p>
+      <p class="login-note">New here? Tap <strong>Create account</strong> and use your email — we'll send your login details for safekeeping.</p>
     </div>
   </div>
 
@@ -342,7 +345,7 @@
       </div>
 
       <button type="button" class="demo-delivered-btn" id="demo-delivered-btn" onclick="markOrderDeliveredForRating()">
-        ✓ Mark as delivered (demo) — then rate rider
+        ✓ Confirm delivered — then rate rider
       </button>
 
       <!-- Rider rating (shown after delivery) -->
@@ -649,6 +652,9 @@
       <div id="active-delivery" class="active-card empty">
         <p>No active delivery</p>
       </div>
+      <h3 style="margin-top:20px">Delivery proofs</h3>
+      <p class="small" style="margin-bottom:10px">Photos you took at delivery — saved for your records</p>
+      <div id="pod-history" class="pod-history-list"></div>
     </main>
   </div>
 
@@ -665,6 +671,9 @@
 
     <div class="biz-tabs mgr-tabs">
       <button class="biz-tab active" data-mgr="overview" onclick="showMgrTab('overview')">Overview</button>
+      <button class="biz-tab" data-mgr="activity" onclick="showMgrTab('activity')">Activity</button>
+      <button class="biz-tab" data-mgr="payments" onclick="showMgrTab('payments')">Payments</button>
+      <button class="biz-tab" data-mgr="reports" onclick="showMgrTab('reports')">Reports</button>
       <button class="biz-tab" data-mgr="ads" onclick="showMgrTab('ads')">Ads</button>
       <button class="biz-tab" data-mgr="businesses" onclick="showMgrTab('businesses')">Business</button>
       <button class="biz-tab" data-mgr="customers" onclick="showMgrTab('customers')">Customers</button>
@@ -701,6 +710,44 @@
         <div id="mgr-deals-snapshot"></div>
       </div>
 
+
+      <div id="mgr-activity" class="biz-panel">
+        <h3>All platform activity</h3>
+        <p class="small" style="margin-bottom:12px">Sign-ups, orders, ads, subscriptions, and payments in one feed.</p>
+        <div id="mgr-activity-list" class="activity-list"></div>
+      </div>
+
+      <div id="mgr-payments" class="biz-panel">
+        <h3>Payments &amp; subscribers</h3>
+        <p class="small" style="margin-bottom:12px">MMG <strong>6124940</strong> · Subscriptions GYD 5,000/mo · Ads GYD 1,000/day or 5,000/week</p>
+        <div class="revenue-card" style="margin-bottom:14px">
+          <div class="sub-label">Ledger totals</div>
+          <div class="revenue-grid">
+            <div><div class="lbl">Subscriptions</div><div class="val" id="mgr-pay-sub">GYD 0</div></div>
+            <div><div class="lbl">Ad placements</div><div class="val" id="mgr-pay-ads">GYD 0</div></div>
+            <div><div class="lbl">All payments</div><div class="val" id="mgr-pay-total">GYD 0</div></div>
+            <div><div class="lbl">Recurring paid</div><div class="val" id="mgr-pay-recurring">0</div></div>
+          </div>
+        </div>
+        <h4 style="margin:12px 0 8px">Recurring subscribers</h4>
+        <div id="mgr-subscribers-list"></div>
+        <h4 style="margin:16px 0 8px">Payment transactions</h4>
+        <div id="mgr-payments-list"></div>
+      </div>
+
+      <div id="mgr-reports" class="biz-panel">
+        <h3>Daily &amp; monthly reports</h3>
+        <div class="stats-grid" style="margin-bottom:14px">
+          <div class="stat-card"><span class="stat-label">Today income</span><span class="stat-value" id="mgr-rep-today">GYD 0</span></div>
+          <div class="stat-card"><span class="stat-label">This month</span><span class="stat-value" id="mgr-rep-month">GYD 0</span></div>
+          <div class="stat-card"><span class="stat-label">Today sign-ups</span><span class="stat-value" id="mgr-rep-signups">0</span></div>
+          <div class="stat-card"><span class="stat-label">Today orders</span><span class="stat-value" id="mgr-rep-orders">0</span></div>
+        </div>
+        <h4>Daily summary</h4>
+        <div id="mgr-daily-report" class="activity-list"></div>
+        <h4 style="margin-top:16px">Monthly summary</h4>
+        <div id="mgr-monthly-report" class="activity-list"></div>
+      </div>
       <div id="mgr-ads" class="biz-panel">
         <div class="panel-header">
           <h3>Advert banners</h3>
