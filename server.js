@@ -112,10 +112,16 @@ function serveStatic(req, res, pathname) {
   }
   fs.readFile(filePath, (err, data) => {
     if (err) {
-      // SPA fallback
       if (pathname.startsWith('/api')) {
         return sendJSON(res, 404, { error: 'Not found' });
       }
+      // Do not SPA-fallback for real assets (images, css, js) — return 404
+      const ext = path.extname(pathname).toLowerCase();
+      if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.css', '.js', '.woff', '.woff2'].includes(ext)) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        return res.end('Not found: ' + pathname);
+      }
+      // SPA fallback for app routes only
       fs.readFile(path.join(ROOT, 'index.html'), (e2, html) => {
         if (e2) { res.writeHead(404); return res.end('Not found'); }
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
