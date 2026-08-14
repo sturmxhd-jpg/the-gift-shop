@@ -53,12 +53,14 @@ const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
 const ORDERS_FILE = path.join(DATA_DIR, 'orders.json');
 const RIDERS_FILE = path.join(DATA_DIR, 'riders.json');
 const RATINGS_FILE = path.join(DATA_DIR, 'ratings.json');
+const ADS_FILE = path.join(DATA_DIR, 'ads.json');
 const META_FILE = path.join(DATA_DIR, 'meta.json');
 const OUTBOX_DIR = path.join(DATA_DIR, 'outbox');
 const DEAL_PHOTOS_DIR = path.join(DATA_DIR, 'deal-photos');
+const RIDER_PHOTOS_DIR = path.join(DATA_DIR, 'rider-photos');
 
 function ensureDataDirs() {
-  [DATA_DIR, OUTBOX_DIR, path.join(DATA_DIR, 'proofs'), DEAL_PHOTOS_DIR].forEach(d => {
+  [DATA_DIR, OUTBOX_DIR, path.join(DATA_DIR, 'proofs'), DEAL_PHOTOS_DIR, RIDER_PHOTOS_DIR].forEach(d => {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
   });
 }
@@ -79,6 +81,13 @@ let deliveryProofs = loadJSON(PROOFS_FILE, []);
 deals = loadJSON(DEALS_FILE, []);
 availableJobs = loadJSON(JOBS_FILE, []);
 riders = loadJSON(RIDERS_FILE, []);
+// Backfill fields added after some riders.json files were first created.
+riders.forEach(r => {
+  if (r.plan === undefined) r.plan = 'free';
+  if (r.paidUntil === undefined) r.paidUntil = null;
+  if (r.photo === undefined) r.photo = null;
+});
+let platformAds = loadJSON(ADS_FILE, []);
 // orders/ratings already exist as const orders = [] / const ratings = []
 try { const o = loadJSON(ORDERS_FILE, null); if (Array.isArray(o)) { while (orders.length) orders.pop(); o.forEach(x => orders.push(x)); } } catch (_) {}
 try { const r = loadJSON(RATINGS_FILE, null); if (Array.isArray(r)) { while (ratings.length) ratings.pop(); r.forEach(x => ratings.push(x)); } } catch (_) {}
@@ -87,6 +96,7 @@ function persistJobs() { saveJSON(JOBS_FILE, availableJobs); }
 function persistOrders() { saveJSON(ORDERS_FILE, orders); }
 function persistRiders() { saveJSON(RIDERS_FILE, riders); }
 function persistRatings() { saveJSON(RATINGS_FILE, ratings); }
+function persistAds() { saveJSON(ADS_FILE, platformAds); }
 function persistAllData() {
   persistUsers();
   persistDeals();
@@ -95,6 +105,7 @@ function persistAllData() {
   persistProofs();
   persistRiders();
   persistRatings();
+  persistAds();
   saveJSON(META_FILE, { lastSaved: new Date().toISOString(), users: users.length, deals: deals.length, jobs: availableJobs.length, riders: riders.length });
 }
 console.log('[Gift Shop] Data dir: ' + DATA_DIR);
@@ -108,17 +119,63 @@ const passwordResetTokens = new Map(); // email -> { code, exp }
 function persistUsers() { saveJSON(USERS_FILE, users); }
 function persistProofs() { saveJSON(PROOFS_FILE, deliveryProofs); }
 
-/** Decode a data:image/...;base64,... URL and save it to disk, returning a public /data/... URL. Returns the input unchanged if it isn't a data URL (e.g. already a saved path, or null). */
-function saveDealPhoto(id, photoInput) {
+/** Decode a data:image/...;base64,... URL and save it to disk under `dir`, returning a public /data/<publicSubdir>/... URL. Returns the input unchanged if it isn't a data URL (e.g. already a saved path, or null). */
+function savePhoto(dir, publicSubdir, prefix, id, photoInput) {
   if (!photoInput) return null;
   if (!String(photoInput).startsWith('data:image')) return photoInput; // already a URL/path
   const m = String(photoInput).match(/^data:(image\/\w+);base64,(.+)$/);
   if (!m) return null;
   const ext = m[1].split('/')[1] === 'jpeg' ? 'jpg' : m[1].split('/')[1];
-  const fname = 'DEAL-' + id + '-' + Date.now() + '.' + ext;
-  const fpath = path.join(DEAL_PHOTOS_DIR, fname);
+  const fname = prefix + '-' + id + '-' + Date.now() + '.' + ext;
+  const fpath = path.join(dir, fname);
   fs.writeFileSync(fpath, Buffer.from(m[2], 'base64'));
-  return '/data/deal-photos/' + fname;
+  return '/data/' + publicSubdir + '/' + fname;
+}
+function saveDealPhoto(id, photoInput) {
+  return savePhoto(DEAL_PHOTOS_DIR, 'deal-photos', 'DEAL', id, photoInput);
+}
+function saveRiderPhoto(id, photoInput) {
+  return savePhoto(RIDER_PHOTOS_DIR, 'rider-photos', 'RIDER', id, photoInput);
+}
+
+// ─── Geo / dispatch helpers ────────────────────────────────────────────────
+// Note: this prototype has no real geocoding, so a "pickup point" is often a
+// fixed approximate Georgetown coordinate rather than the business's true
+// address. Distances are still computed for real between that point and each
+// rider's real (or simulated) GPS position, so "closest available rider"
+// dispatch is functionally real even though the pickup point itself is
+// approximate. Wire up a geocoding service and pass real business
+// coordinates through to make it fully accurate.
+function haversineKm(lat1, lon1, lat2, lon2) {
+  if ([lat1, lon1, lat2, lon2].some(v => typeof v !== 'number' || Number.isNaN(v))) return Infinity;
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+const FREE_RIDER_JOB_CAP = 3;
+const PAID_RIDER_JOB_CAP = 10;
+const RIDER_SUB_FEE_GYD = 5000;
+function riderIsPaid(rider) {
+  return !!(rider && rider.plan === 'paid' && rider.paidUntil && new Date(rider.paidUntil).getTime() > Date.now());
+}
+function riderJobCap(rider) {
+  return riderIsPaid(rider) ? PAID_RIDER_JOB_CAP : FREE_RIDER_JOB_CAP;
+}
+function riderActiveJobCount(riderId) {
+  return orders.filter(o => o.rider && o.rider.id === riderId && o.status !== 'delivered').length;
+}
+/** The single best rider to offer a job at (lat,lng) to right now: online, under their cap, hasn't declined this job, closest first. Returns null if nobody qualifies. */
+function closestEligibleRider(lat, lng, excludeRiderIds) {
+  const excluded = excludeRiderIds ? new Set(excludeRiderIds) : null;
+  const candidates = riders
+    .filter(r => r.online)
+    .filter(r => !excluded || !excluded.has(r.id))
+    .filter(r => riderActiveJobCount(r.id) < riderJobCap(r))
+    .map(r => ({ r, dist: haversineKm(lat, lng, r.lat, r.lng) }))
+    .sort((a, b) => a.dist - b.dist);
+  return candidates.length ? candidates[0] : null;
 }
 
 /** Send email: uses RESEND_API_KEY if set, otherwise writes to data/outbox for review */
@@ -373,13 +430,18 @@ async function handleAPI(req, res, pathname, query) {
   if (pathname === '/api/orders' && method === 'POST') {
     try {
       const body = await readBody(req);
-      const { items, fulfillment, paymentMethod, deliveryAddress, deliveryPhone, deliveryNotes, mmgPhone, subtotal, deliveryFee } = body;
+      const { items, fulfillment, paymentMethod, deliveryAddress, deliveryPhone, deliveryNotes, mmgPhone, subtotal, deliveryFee, pickupLat, pickupLng, deliveryLat, deliveryLng } = body;
       if (!items || !items.length) return sendJSON(res, 400, { error: 'Cart is empty' });
       if (fulfillment === 'delivery' && (!deliveryAddress || !deliveryPhone)) {
         return sendJSON(res, 400, { error: 'Delivery address and contact number required' });
       }
-      const online = riders.filter(r => r.online);
-      const rider = online[Math.floor(Math.random() * online.length)] || riders[0];
+      // Offer the delivery to the closest available rider under their job cap
+      // (falls back to Georgetown centre when no real pickup coords are given —
+      // see the note above closestEligibleRider).
+      const best = fulfillment === 'delivery'
+        ? closestEligibleRider(typeof pickupLat === 'number' ? pickupLat : 6.812, typeof pickupLng === 'number' ? pickupLng : -58.155)
+        : null;
+      const rider = best ? best.r : null;
       const order = {
         id: 'ORD-' + uuid(),
         items,
@@ -388,14 +450,18 @@ async function handleAPI(req, res, pathname, query) {
         deliveryAddress: deliveryAddress || null,
         deliveryPhone: deliveryPhone || null,
         deliveryNotes: deliveryNotes || '',
+        // Drop-off coordinates (best-effort, from the customer's browser at
+        // checkout) — used to alert them when their rider is close.
+        deliveryLat: typeof deliveryLat === 'number' ? deliveryLat : null,
+        deliveryLng: typeof deliveryLng === 'number' ? deliveryLng : null,
         mmgPhone: mmgPhone || null,
         subtotal: subtotal || items.reduce((s, i) => s + i.price * i.qty, 0),
         deliveryFee: deliveryFee || 0,
         status: 'confirmed',
-        rider: fulfillment === 'delivery' ? {
+        rider: rider ? {
           id: rider.id, name: rider.name, phone: rider.phone,
           rating: rider.rating, ratingCount: rider.ratingCount,
-          avatar: rider.avatar, lat: rider.lat, lng: rider.lng
+          avatar: rider.avatar, photo: rider.photo || null, lat: rider.lat, lng: rider.lng
         } : null,
         createdAt: new Date().toISOString(),
         podPhoto: null, podNotes: null
@@ -443,12 +509,35 @@ async function handleAPI(req, res, pathname, query) {
     return sendJSON(res, 200, riders.map(r => ({
       id: r.id, name: r.name, phone: r.phone,
       rating: r.rating, ratingCount: r.ratingCount,
-      avatar: r.avatar, online: r.online
+      avatar: r.avatar, online: r.online, photo: r.photo || null,
+      plan: riderIsPaid(r) ? 'paid' : 'free', paidUntil: r.paidUntil || null,
+      activeJobs: riderActiveJobCount(r.id), jobCap: riderJobCap(r)
     })));
   }
 
+  // Jobs currently up for grabs. With ?riderId=..., only jobs where THIS
+  // rider is the single closest online, under-cap rider are included —
+  // that's what implements "show only to the closest rider; if they're
+  // offline or already at their cap, fall through to the next-closest one"
+  // (recomputed fresh on every poll, so it always reflects current
+  // online/cap state without needing a separate reassignment step).
+  // Without ?riderId= (e.g. the manager dashboard), every open job is
+  // returned unfiltered.
   if (pathname === '/api/riders/jobs' && method === 'GET') {
-    return sendJSON(res, 200, { jobs: availableJobs });
+    const riderId = query.riderId;
+    if (!riderId) return sendJSON(res, 200, { jobs: availableJobs });
+    const mine = availableJobs
+      .map(j => {
+        const best = closestEligibleRider(j.lat, j.lng, j.declinedBy);
+        return best && best.r.id === riderId ? { ...j, distanceKm: Math.round(best.dist * 10) / 10 } : null;
+      })
+      .filter(Boolean);
+    const rider = riders.find(r => r.id === riderId);
+    return sendJSON(res, 200, {
+      jobs: mine,
+      activeJobs: rider ? riderActiveJobCount(rider.id) : 0,
+      jobCap: rider ? riderJobCap(rider) : FREE_RIDER_JOB_CAP
+    });
   }
 
   if (pathname === '/api/riders/jobs' && method === 'POST') {
@@ -475,7 +564,8 @@ async function handleAPI(req, res, pathname, query) {
           lng: body.lng || -58.155,
           total: body.total || 0,
           createdAt: body.createdAt || new Date().toISOString(),
-          status: 'available'
+          status: 'available',
+          declinedBy: []
         });
       }
       if (typeof persistJobs === 'function') persistJobs();
@@ -490,16 +580,122 @@ async function handleAPI(req, res, pathname, query) {
     try {
       const body = await readBody(req);
       const idx = availableJobs.findIndex(j => j.id === acceptMatch[1]);
-      if (idx === -1) return sendJSON(res, 404, { error: 'Job not found' });
+      if (idx === -1) return sendJSON(res, 404, { error: 'Job not found — it may already have been taken' });
+      const rider = riders.find(r => r.id === body.riderId) || (body.riderId ? null : riders[0]);
+      if (!rider) return sendJSON(res, 400, { error: 'riderId required' });
+      const cap = riderJobCap(rider);
+      const activeCount = riderActiveJobCount(rider.id);
+      if (activeCount >= cap) {
+        return sendJSON(res, 403, {
+          error: riderIsPaid(rider)
+            ? `You already have ${activeCount}/${cap} active jobs (Pro Rider limit). Finish one before accepting another.`
+            : `You already have ${activeCount}/${cap} active jobs (Free plan limit). Upgrade to Pro Rider (GYD ${RIDER_SUB_FEE_GYD.toLocaleString()}/mo) for up to ${PAID_RIDER_JOB_CAP} at once, or finish one first.`
+        });
+      }
       const job = availableJobs.splice(idx, 1)[0];
       if (typeof persistJobs === 'function') persistJobs();
-      const rider = riders.find(r => r.id === (body.riderId || 'R1')) || riders[0];
+      const riderInfo = { id: rider.id, name: rider.name, phone: rider.phone, rating: rider.rating, ratingCount: rider.ratingCount, photo: rider.photo || null, lat: rider.lat, lng: rider.lng };
+      // Keep the canonical order record (used for cap accounting + customer
+      // tracking) in sync with who actually accepted the job. Jobs normally
+      // originate from a real checkout order with the same id — but if one
+      // doesn't exist (e.g. a job posted without going through checkout),
+      // synthesize a minimal order record so cap accounting always has
+      // something real to count against instead of silently under-counting.
+      let order = orders.find(o => o.id === job.id);
+      if (order) {
+        order.rider = riderInfo;
+        if (order.status === 'confirmed') order.status = 'accepted';
+      } else {
+        order = {
+          id: job.id,
+          items: [{ id: job.id, title: job.item, price: job.total || job.fee || 0, qty: 1 }],
+          fulfillment: 'delivery',
+          paymentMethod: 'cod',
+          deliveryAddress: job.address || null,
+          deliveryPhone: job.phone || null,
+          deliveryNotes: '',
+          deliveryLat: null, deliveryLng: null,
+          mmgPhone: null,
+          subtotal: job.total || 0,
+          deliveryFee: job.fee || 0,
+          status: 'accepted',
+          rider: riderInfo,
+          createdAt: job.createdAt || new Date().toISOString(),
+          podPhoto: null, podNotes: null,
+          total: (job.total || 0) + (job.fee || 0)
+        };
+        orders.unshift(order);
+      }
+      persistOrders();
       return sendJSON(res, 200, {
         success: true,
-        job: { ...job, status: 'active', rider: { id: rider.id, name: rider.name, phone: rider.phone } }
+        job: { ...job, status: 'active', rider: riderInfo },
+        activeJobs: riderActiveJobCount(rider.id),
+        jobCap: cap
       });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Invalid JSON' });
+    }
+  }
+
+  const declineMatch = pathname.match(/^\/api\/riders\/jobs\/([^/]+)\/decline$/);
+  if (declineMatch && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const job = availableJobs.find(j => j.id === declineMatch[1]);
+      if (!job) return sendJSON(res, 404, { error: 'Job not found — it may already have been taken' });
+      if (!body.riderId) return sendJSON(res, 400, { error: 'riderId required' });
+      if (!Array.isArray(job.declinedBy)) job.declinedBy = [];
+      if (!job.declinedBy.includes(body.riderId)) job.declinedBy.push(body.riderId);
+      persistJobs();
+      // Immediately compute who it should go to next, so the client can
+      // show something useful without waiting for the next poll.
+      const next = closestEligibleRider(job.lat, job.lng, job.declinedBy);
+      return sendJSON(res, 200, { success: true, offeredToNext: !!next });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid JSON' });
+    }
+  }
+
+  const riderSubMatch = pathname.match(/^\/api\/riders\/([^/]+)\/subscribe$/);
+  if (riderSubMatch && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const rider = riders.find(r => r.id === riderSubMatch[1]);
+      if (!rider) return sendJSON(res, 404, { error: 'Rider not found' });
+      if (!body.txid || !body.mmgPhone) {
+        return sendJSON(res, 400, { error: 'mmgPhone and txid required' });
+      }
+      const paidUntil = new Date();
+      paidUntil.setDate(paidUntil.getDate() + 30);
+      rider.plan = 'paid';
+      rider.paidUntil = paidUntil.toISOString();
+      persistRiders();
+      // In production: verify the transaction with the MMG merchant API first.
+      return sendJSON(res, 201, {
+        success: true,
+        plan: 'paid',
+        paidUntil: rider.paidUntil,
+        jobCap: riderJobCap(rider),
+        amount: body.amount || RIDER_SUB_FEE_GYD
+      });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid JSON' });
+    }
+  }
+
+  const riderPhotoMatch = pathname.match(/^\/api\/riders\/([^/]+)\/photo$/);
+  if (riderPhotoMatch && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const rider = riders.find(r => r.id === riderPhotoMatch[1]);
+      if (!rider) return sendJSON(res, 404, { error: 'Rider not found' });
+      if (!body.photo) return sendJSON(res, 400, { error: 'photo required' });
+      rider.photo = saveRiderPhoto(rider.id, body.photo);
+      persistRiders();
+      return sendJSON(res, 200, { success: true, photo: rider.photo });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid request' });
     }
   }
 
@@ -734,7 +930,10 @@ async function handleAPI(req, res, pathname, query) {
           ratingCount: 0,
           online: true,
           lat: 6.8013,
-          lng: -58.1551
+          lng: -58.1551,
+          plan: 'free',
+          paidUntil: null,
+          photo: null
         });
         persistRiders();
       }
@@ -894,6 +1093,42 @@ async function handleAPI(req, res, pathname, query) {
     }
   }
 
+  // Platform ads (manager-created, free — shown on login/customer/business/rider
+  // screens). Client-side gates the "New Ad" control to the manager UI only;
+  // there's no session/auth-token system in this prototype for the server to
+  // check who's calling, same as the rest of this app's endpoints.
+  if (pathname === '/api/ads' && method === 'GET') {
+    return sendJSON(res, 200, { ads: platformAds });
+  }
+  if (pathname === '/api/ads' && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      if (!body.headline) return sendJSON(res, 400, { error: 'headline required' });
+      const id = body.id || ('AD' + Date.now().toString(36).toUpperCase());
+      const existing = platformAds.find(a => a.id === id);
+      const ad = {
+        id,
+        headline: body.headline,
+        sub: body.sub || '',
+        place: body.place || 'all', // login | customer | business | rider | all | (legacy) both
+        status: body.status || 'Active'
+      };
+      if (existing) Object.assign(existing, ad); else platformAds.unshift(ad);
+      persistAds();
+      return sendJSON(res, 201, { success: true, ad: existing || ad });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid JSON' });
+    }
+  }
+  const adMatch = pathname.match(/^\/api\/ads\/([^/]+)$/);
+  if (adMatch && method === 'DELETE') {
+    const before = platformAds.length;
+    platformAds = platformAds.filter(a => a.id !== adMatch[1]);
+    if (platformAds.length === before) return sendJSON(res, 404, { error: 'Ad not found' });
+    persistAds();
+    return sendJSON(res, 200, { success: true });
+  }
+
 
   if (pathname === '/api/admin/activity' && method === 'GET') {
     return sendJSON(res, 200, {
@@ -944,7 +1179,7 @@ async function handleAPI(req, res, pathname, query) {
   }
 
 if (pathname === '/api/admin/users' && method === 'GET') {
-    return sendJSON(res, 200, users.map(u => publicUser(u)));
+    return sendJSON(res, 200, { success: true, users: users.map(u => publicUser(u)) });
   }
   if (pathname === '/api/admin/users' && method === 'POST') {
     try {

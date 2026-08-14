@@ -541,6 +541,33 @@
     </div>
   </div>
 
+  <div id="rider-sub-pay-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Upgrade to Pro Rider — GYD 5,000 / month</h2>
+      <p class="small" style="margin-bottom:12px">
+        Accept up to <strong>10 deliveries at once</strong> instead of 3. Pay with MMG to the number below.
+      </p>
+      <div class="mmg-pay-box">
+        <div class="mmg-label">Send MMG to</div>
+        <div class="mmg-number">61214940</div>
+        <div class="mmg-amount">Amount: <strong>GYD 5,000</strong></div>
+        <div class="mmg-ref">Reference: <span id="rider-mmg-ref">TGS-RIDER-SUB</span></div>
+      </div>
+      <div class="form-group">
+        <label>MMG transaction / reference code</label>
+        <input type="text" id="rider-mmg-txid" placeholder="Code from your MMG payment" required>
+        <p class="small" style="margin-top:4px">Send GYD 5,000 to <strong>61214940</strong>, then enter the code MMG gives you.</p>
+      </div>
+      <button class="primary-btn" onclick="confirmRiderSubscription()">
+        I’ve paid — Activate Pro Rider
+      </button>
+      <p class="small" style="text-align:center;margin-top:10px;color:var(--muted)">
+        Keep your MMG receipt. Codes are checked against payments to 61214940.
+      </p>
+    </div>
+  </div>
+
   <!-- ==================== BUSINESS PORTAL ==================== -->
   <div id="business-app" class="screen">
     <header class="app-header business-header">
@@ -562,6 +589,15 @@
       <button class="biz-tab" data-biz="orders">Orders</button>
       <button class="biz-tab" data-biz="settlement">Settlement</button>
       <button class="biz-tab" data-biz="promote">Promote</button>
+    </div>
+
+    <div class="ad-banner" id="business-ad-banner" onclick="showToast('Advertise on The Gift Shop — contact support')">
+      <span class="ad-badge">AD</span>
+      <div class="ad-body">
+        <strong id="business-ad-headline">Get more customers</strong>
+        <span id="business-ad-sub">Upgrade to Growth or Premium for lower commission &amp; delivery</span>
+      </div>
+      <span class="ad-cta">Learn more →</span>
     </div>
 
     <main class="biz-content">
@@ -712,8 +748,43 @@
       </div>
     </div>
 
+    <div class="ad-banner" id="rider-ad-banner" onclick="showToast('Advertise on The Gift Shop — contact support')">
+      <span class="ad-badge">AD</span>
+      <div class="ad-body">
+        <strong id="rider-ad-headline">Ride more, earn more</strong>
+        <span id="rider-ad-sub">Go online during lunch &amp; dinner rush for the most jobs</span>
+      </div>
+      <span class="ad-cta">Learn more →</span>
+    </div>
+
     <main class="rider-content">
-      <h3>Available Orders</h3>
+      <div class="logo-card" id="rider-profile-card">
+        <div class="logo-card-row">
+          <div class="biz-logo-preview" id="rider-photo-preview">🛵</div>
+          <div style="flex:1">
+            <h4 style="margin:0 0 4px" id="rider-profile-name">Rider</h4>
+            <label class="primary-btn small" style="cursor:pointer;display:inline-block">
+              Change photo
+              <input type="file" accept="image/*" id="rider-photo-input" onchange="handleRiderPhoto(event)" hidden>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="sub-card" id="rider-sub-card">
+        <div class="sub-card-top">
+          <div>
+            <div class="sub-label" id="rider-sub-label">Free plan</div>
+            <div class="sub-title" id="rider-sub-title">Up to 3 jobs at a time</div>
+          </div>
+          <div class="sub-price" id="rider-sub-price">GYD 5,000<span>/mo</span></div>
+        </div>
+        <p class="sub-desc" id="rider-sub-desc">Upgrade to Pro Rider to accept up to 10 deliveries at once — more jobs, more earnings.</p>
+        <p class="sub-meta" id="rider-sub-meta"></p>
+        <button type="button" class="primary-btn" id="rider-sub-btn" onclick="openRiderSubscribe()">Upgrade — GYD 5,000/mo</button>
+      </div>
+
+      <h3>Available Orders <span class="plan-badge" id="rider-job-cap-badge" style="margin-left:6px"></span></h3>
       <div id="rider-orders" class="rider-order-list"></div>
       <h3>Active Delivery</h3>
       <div id="active-delivery" class="active-card empty">
@@ -922,9 +993,11 @@
         <div class="form-group">
           <label>Placement</label>
           <select id="mgr-ad-place">
-            <option value="both">Login + Customer</option>
+            <option value="all">All (Login + Customer + Business + Rider)</option>
             <option value="login">Login only</option>
             <option value="customer">Customer only</option>
+            <option value="business">Business only</option>
+            <option value="rider">Rider only</option>
           </select>
         </div>
         <div class="form-group">

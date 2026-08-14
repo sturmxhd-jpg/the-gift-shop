@@ -650,8 +650,12 @@ async function handleAuth(e) {
         phone: user.phone || "",
         email: user.email || "",
         businessName: user.businessName,
+        riderId: user.riderId || null,
         subscription: user.role === "business" ? "trial" : "n/a"
       });
+      if (typeof saveAdminUsers === "function") saveAdminUsers();
+    } else if (user.role === "delivery" && user.riderId && !exists.riderId) {
+      exists.riderId = user.riderId;
       if (typeof saveAdminUsers === "function") saveAdminUsers();
     }
   }
@@ -705,6 +709,9 @@ function enterApp(role) {
     if (typeof updateRiderEarningsUI === "function") updateRiderEarningsUI();
     updateHeaderUser();
     if (typeof loadPodHistory === "function") loadPodHistory();
+    // Job offers are time-sensitive — poll for them regardless of whether
+    // the general auto-refresh toggle is on.
+    if (typeof startRiderJobsPolling === "function") startRiderJobsPolling();
   } else if (role === "manager") {
     const ok = currentUser && (
       currentUser.identifier === MANAGER_USERNAME ||
@@ -718,8 +725,10 @@ function enterApp(role) {
     document.getElementById("manager-app").classList.add("active");
     const lbl = document.getElementById("mgr-user-label");
     if (lbl) lbl.textContent = "raulkc";
-    if (typeof refreshManagerFromServer === "function") refreshManagerFromServer().then(() => renderManager());
-    else renderManager();
+    if (typeof refreshManagerFromServer === "function") {
+      Promise.all([refreshManagerFromServer(), typeof refreshMgrRiders === "function" ? refreshMgrRiders() : null])
+        .then(() => renderManager());
+    } else renderManager();
   } else {
     document.getElementById("role-selector").classList.add("active");
   }
@@ -749,6 +758,7 @@ function logout() {
   try { localStorage.removeItem("tgs_user"); } catch (_) {}
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   document.getElementById("role-selector").classList.add("active");
+  if (typeof stopRiderJobsPolling === "function") stopRiderJobsPolling();
   showToast("Signed out");
 }
 
@@ -1652,10 +1662,18 @@ function markReady(id) {
 }
 
 // Business tabs
-document.querySelectorAll('.biz-tab').forEach(tab => {
+// Scoped to `.biz-tabs` containers that are NOT the manager tab bar — the
+// manager portal reuses the `.biz-tab`/`.biz-panel` classes purely for
+// shared styling and has its own click handling (showMgrTab). Without this
+// scoping, clicking any manager tab also ran this handler, which reads
+// `tab.dataset.biz` (undefined for manager buttons, which use `data-mgr`),
+// throws trying to find `#biz-undefined`, and — because it clears the
+// `active` class from every `.biz-panel` (including manager panels) before
+// crashing — left every manager option page blank.
+document.querySelectorAll('.biz-tabs:not(.mgr-tabs) .biz-tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.biz-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.biz-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.biz-tabs:not(.mgr-tabs) .biz-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#business-app .biz-panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('biz-' + tab.dataset.biz).classList.add('active');
     if (tab.dataset.biz === 'promote' && typeof renderBizAds === 'function') renderBizAds();
@@ -1665,25 +1683,45 @@ document.querySelectorAll('.biz-tab').forEach(tab => {
 
 // ===== RIDER =====
 function renderRider() {
+  updateRiderCapBadge();
+  updateRiderProfileUI();
+  updateRiderSubscriptionUI();
   const el = document.getElementById('rider-orders');
   if (!el) return;
-  if (!riderOrders.length) {
-    el.innerHTML = '<p class="small" style="text-align:center;padding:20px;color:var(--muted)">No delivery jobs yet. Orders appear here when customers check out for delivery.</p>';
+  // Only jobs still up for grabs — an accepted/picked-up job stays in
+  // riderOrders (for cap accounting + so a mid-delivery refresh doesn't
+  // lose it) but belongs in the "Active Delivery" card, not this list.
+  const open = riderOrders.filter(o => !o.status || o.status === 'available');
+  const atCap = riderCapState.activeJobs >= riderCapState.jobCap;
+  if (!open.length) {
+    el.innerHTML = `<p class="small" style="text-align:center;padding:20px;color:var(--muted)">${
+      atCap
+        ? `You're at your job limit (${riderCapState.activeJobs}/${riderCapState.jobCap}). Finish a delivery to see more, or upgrade for a higher limit.`
+        : 'No delivery jobs offered to you right now. Jobs appear here when you’re the closest available rider to a pickup.'
+    }</p>`;
     return;
   }
-  el.innerHTML = riderOrders.map(o => `
+  el.innerHTML = open.map(o => `
     <div class="rider-order" id="rider-${o.id}">
       <h4>${o.item}</h4>
       <div class="rider-meta">
         ${o.business} → ${o.address}<br>
-        ${o.distance || ''} · Earn GYD ${o.fee || 0}
+        ${typeof o.distanceKm === 'number' ? o.distanceKm + ' km away' : (o.distance || '')} · Earn GYD ${o.fee || 0}
       </div>
       <div class="rider-actions">
         <button class="decline-btn" onclick="declineOrder('${o.id}')">Decline</button>
-        <button class="accept-btn" onclick="acceptOrder('${o.id}')">Accept</button>
+        <button class="accept-btn" ${atCap ? 'disabled style="opacity:.5;cursor:not-allowed"' : ''} onclick="acceptOrder('${o.id}')">Accept</button>
       </div>
     </div>
   `).join('');
+}
+
+function updateRiderCapBadge() {
+  const badge = document.getElementById('rider-job-cap-badge');
+  if (!badge) return;
+  const { activeJobs, jobCap } = riderCapState;
+  badge.textContent = activeJobs + '/' + jobCap + ' jobs';
+  badge.classList.toggle('expired', activeJobs >= jobCap);
 }
 
 function toggleOnline(el) {
@@ -1693,41 +1731,101 @@ function toggleOnline(el) {
   document.getElementById('rider-loc-label').textContent = on ? "Online • Georgetown" : "Offline";
 }
 
-function acceptOrder(id) {
-  const order = riderOrders.find(o => o.id === id);
-  if (!order) return;
-  
+async function declineOrder(id) {
   document.getElementById('rider-' + id)?.remove();
-  
-  document.getElementById('active-delivery').className = 'active-card has-order';
-  document.getElementById('active-delivery').innerHTML = `
-    <h4 style="margin-bottom:6px">${order.item}</h4>
-    <p class="rider-meta" style="margin-bottom:8px">${order.business} · Earn GYD ${order.fee}</p>
-    
-    <div class="customer-contact">
-      <strong>👤 ${order.customer}</strong>
-      <div>📍 ${order.address}</div>
-      <div>📞 ${order.phone}</div>
-    </div>
-    
-    <div class="live-loc-row" style="margin:10px 0">
-      <span class="live-dot"></span>
-      <span>Sharing live location with customer</span>
-    </div>
-    
-    <div class="rider-action-row">
-      <a class="btn-nav" href="https://maps.google.com/?q=${encodeURIComponent(order.address)}" target="_blank">🗺️ Navigate</a>
-      <a class="btn-call" href="tel:+${order.phone.replace(/-/g,'')}">📞 Call Customer</a>
-    </div>
-    <button class="btn-done primary-btn" onclick="completeDelivery()">Mark Delivered</button>
-  `;
-  
-  showToast('Order accepted! Live location shared with customer 📍');
+  riderOrders = riderOrders.filter(r => r.id !== id);
+  if (typeof saveRiderOrders === 'function') saveRiderOrders();
+  showToast('Order declined');
+  const riderId = currentUser && (currentUser.riderId || currentUser.id);
+  if (riderId && typeof api === 'function') {
+    // Tells the server not to offer this job to me again — it falls
+    // through to the next-closest eligible rider instead.
+    try { await api('/api/riders/jobs/' + encodeURIComponent(id) + '/decline', { method: 'POST', body: JSON.stringify({ riderId }) }); } catch (_) {}
+  }
 }
 
-function declineOrder(id) {
-  document.getElementById('rider-' + id)?.remove();
-  showToast('Order declined');
+function updateRiderProfileUI() {
+  const nameEl = document.getElementById('rider-profile-name');
+  const photoEl = document.getElementById('rider-photo-preview');
+  if (nameEl) nameEl.textContent = (currentUser && currentUser.name) || 'Rider';
+  if (photoEl) {
+    const photo = currentUser && currentUser.photo;
+    photoEl.innerHTML = photo
+      ? `<img src="${photo}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:14px">`
+      : '🛵';
+  }
+}
+
+function handleRiderPhoto(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const dataUrl = e.target.result;
+    const riderId = currentUser && (currentUser.riderId || currentUser.id);
+    if (!riderId || typeof api !== 'function') return;
+    const res = await api('/api/riders/' + encodeURIComponent(riderId) + '/photo', {
+      method: 'POST', body: JSON.stringify({ photo: dataUrl })
+    });
+    if (res && res.success) {
+      currentUser.photo = res.photo;
+      try { localStorage.setItem('tgs_user', JSON.stringify(currentUser)); } catch (_) {}
+      updateRiderProfileUI();
+      showToast('Profile photo updated');
+    } else {
+      showToast((res && res.error) || 'Could not upload photo');
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+function updateRiderSubscriptionUI() {
+  const card = document.getElementById('rider-sub-card');
+  if (!card) return;
+  const paid = riderCapState.plan === 'paid';
+  card.classList.toggle('paid', paid);
+  const label = document.getElementById('rider-sub-label');
+  const title = document.getElementById('rider-sub-title');
+  const desc = document.getElementById('rider-sub-desc');
+  const meta = document.getElementById('rider-sub-meta');
+  const btn = document.getElementById('rider-sub-btn');
+  if (label) label.textContent = paid ? 'Pro Rider' : 'Free plan';
+  if (title) title.textContent = paid ? `Up to ${riderCapState.jobCap} jobs at a time` : `Up to ${riderCapState.jobCap} jobs at a time`;
+  if (desc) desc.textContent = paid
+    ? 'You can accept up to 10 deliveries at once — thanks for going Pro!'
+    : 'Upgrade to Pro Rider to accept up to 10 deliveries at once — more jobs, more earnings.';
+  if (meta) meta.textContent = paid && currentUser && currentUser.paidUntil
+    ? 'Renews ' + new Date(currentUser.paidUntil).toLocaleDateString()
+    : '';
+  if (btn) btn.style.display = paid ? 'none' : '';
+}
+
+function openRiderSubscribe() {
+  const txid = document.getElementById('rider-mmg-txid');
+  if (txid) txid.value = '';
+  document.getElementById('rider-sub-pay-modal')?.classList.add('active');
+}
+
+async function confirmRiderSubscription() {
+  const txid = document.getElementById('rider-mmg-txid')?.value?.trim();
+  if (!txid) { showToast('Enter your MMG transaction code'); return; }
+  const riderId = currentUser && (currentUser.riderId || currentUser.id);
+  if (!riderId || typeof api !== 'function') return;
+  const res = await api('/api/riders/' + encodeURIComponent(riderId) + '/subscribe', {
+    method: 'POST',
+    body: JSON.stringify({ txid, mmgPhone: (currentUser && currentUser.phone) || '', amount: 5000 })
+  });
+  if (res && res.success) {
+    riderCapState = { ...riderCapState, jobCap: res.jobCap, plan: 'paid' };
+    currentUser.paidUntil = res.paidUntil;
+    try { localStorage.setItem('tgs_user', JSON.stringify(currentUser)); } catch (_) {}
+    closeModal();
+    updateRiderSubscriptionUI();
+    updateRiderCapBadge();
+    showToast('Pro Rider activated — up to 10 jobs at once 🎉');
+  } else {
+    showToast((res && res.error) || 'Could not activate subscription');
+  }
 }
 
 
@@ -1751,8 +1849,21 @@ document.querySelectorAll('.modal').forEach(m => {
   });
 });
 
+// Sensible defaults so every ad slot is always visible & active — a manager
+// ad for that placement (when Active) replaces the placeholder; nothing ever
+// just disappears. Declared before Init below since applyPlatformAds() runs
+// immediately at load time and needs this available (const has no hoisting).
+const DEFAULT_PLATFORM_ADS = {
+  login: { headline: 'Grow your business with The Gift Shop', sub: 'Reach customers across Guyana — contact support to get featured' },
+  customer: { headline: 'Discover local deals every day', sub: 'New businesses join every week — check back often' },
+  business: { headline: 'Get more customers', sub: 'Upgrade to Growth or Premium for lower commission & delivery' },
+  rider: { headline: 'Ride more, earn more', sub: 'Upgrade to Pro Rider for up to 10 jobs at once — GYD 5,000/mo' }
+};
+
 // Init
 renderDeals();
+applyPlatformAds(); // show default ad placeholders immediately, before any server round-trip
+if (typeof refreshAdsFromServer === 'function') refreshAdsFromServer();
 
 // ===== REAL-TIME GPS TRACKING =====
 let riderWatchId = null;
@@ -1935,15 +2046,42 @@ function updateCustomerTrackingMap(pos) {
     const distEl = document.getElementById('track-distance');
     if (etaEl) etaEl.textContent = `ETA ${eta} min`;
     if (distEl) distEl.textContent = `${km.toFixed(1)} km away`;
+    // Alert the customer once when their rider gets close to the drop-off
+    if (km <= NEAR_DROPOFF_ALERT_KM && !window._proximityAlerted) {
+      window._proximityAlerted = true;
+      showToast('🛵 Your rider is almost there — about ' + eta + ' min away!');
+    }
   }
 }
+
+// Distance (km) at which the customer gets a one-time "almost there" alert
+const NEAR_DROPOFF_ALERT_KM = 1;
 
 // Override acceptOrder to include map + GPS
 const _origAccept = typeof acceptOrder === 'function' ? acceptOrder : null;
 
-function acceptOrder(id) {
+async function acceptOrder(id) {
   const order = riderOrders.find(o => o.id === id);
   if (!order) return;
+
+  const riderId = (currentUser && (currentUser.riderId || currentUser.id)) || '';
+  const result = await api('/api/riders/jobs/' + id + '/accept', {
+    method: 'POST',
+    body: JSON.stringify({ riderId })
+  });
+  if (!result || result.success === false) {
+    const msg = (result && result.error) || 'Could not accept this job — it may already be taken.';
+    showToast(msg);
+    // Refresh so stale/unavailable offers disappear from the list
+    if (typeof renderRider === 'function') renderRider();
+    return;
+  }
+
+  if (typeof result.activeJobs === 'number' && typeof result.jobCap === 'number') {
+    riderCapState.activeJobs = result.activeJobs;
+    riderCapState.jobCap = result.jobCap;
+    updateRiderCapBadge();
+  }
 
   document.getElementById('rider-' + id)?.remove();
   activeOrderDest = { lat: order.lat || 6.812, lng: order.lng || -58.155 };
@@ -2087,10 +2225,16 @@ async function confirmPod() {
   }
   const notes = document.getElementById('pod-notes')?.value || '';
   const live = typeof getActiveLiveOrder === 'function' ? getActiveLiveOrder() : null;
-  const orderId = (window.lastDelivery && window.lastDelivery.orderId) || (live && live.id) || ('DEL-' + Date.now());
+  // Prefer the job actually being delivered right now (set at accept time) —
+  // window.lastDelivery / getActiveLiveOrder() are customer-side globals that
+  // only exist when the customer placed the order in this same browser
+  // session, and only ever track a single order even when this rider has
+  // several jobs in flight at once.
+  const activeJob = window._activeRiderJob || null;
+  const orderId = (activeJob && activeJob.id) || (window.lastDelivery && window.lastDelivery.orderId) || (live && live.id) || ('DEL-' + Date.now());
   const customerEmail = (live && live.customerEmail) || (window.lastDelivery && window.lastDelivery.customerEmail) || '';
-  const customerName = (live && live.customerName) || '';
-  const address = (live && live.address) || (window.lastDelivery && window.lastDelivery.address) || 'Delivery address';
+  const customerName = (live && live.customerName) || (activeJob && activeJob.customer) || '';
+  const address = (activeJob && activeJob.address) || (live && live.address) || (window.lastDelivery && window.lastDelivery.address) || 'Delivery address';
   const riderId = (currentUser && (currentUser.id || currentUser.riderId)) || 'rider';
   const riderName = (currentUser && currentUser.name) || 'Rider';
 
@@ -2117,6 +2261,18 @@ async function confirmPod() {
   let saved = null;
   if (typeof api === 'function') {
     saved = await api('/api/proofs', { method: 'POST', body: JSON.stringify(payload) });
+    // Mark the order delivered server-side so the rider's active-job count
+    // (and therefore their job cap) frees up immediately.
+    try {
+      await api('/api/orders/' + encodeURIComponent(orderId) + '/status', {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'delivered', podPhoto: podPhotoData, podNotes: notes })
+      });
+    } catch (_) {}
+    if (typeof riderCapState !== 'undefined' && riderCapState.activeJobs > 0) {
+      riderCapState.activeJobs -= 1;
+      if (typeof updateRiderCapBadge === 'function') updateRiderCapBadge();
+    }
   }
   // Local backup for rider device
   try {
@@ -2438,16 +2594,21 @@ placeOrder = function() {
 // ===== ASSIGNED RIDER INFO (shown to customer) =====
 let sampleRiders = []; // Real registered riders only
 function syncRidersFromUsers() {
+  const live = typeof liveRidersCache !== 'undefined' ? liveRidersCache : [];
   sampleRiders = (typeof adminUsers !== 'undefined' ? adminUsers : [])
     .filter(u => u.role === 'delivery')
-    .map(u => ({
-      id: u.riderId || u.id,
-      name: u.name || 'Rider',
-      phone: u.phone || '',
-      rating: u.rating || 5,
-      ratingCount: u.ratingCount || 0,
-      avatar: '🛵'
-    }));
+    .map(u => {
+      const l = live.find(r => r.id === (u.riderId || u.id));
+      return {
+        id: u.riderId || u.id,
+        name: u.name || 'Rider',
+        phone: u.phone || '',
+        rating: (l && l.rating) || u.rating || 5,
+        ratingCount: (l && l.ratingCount) || u.ratingCount || 0,
+        photo: (l && l.photo) || null,
+        avatar: '🛵'
+      };
+    });
   if (currentUser && currentUser.role === 'delivery') {
     const exists = sampleRiders.find(r => r.id === (currentUser.riderId || currentUser.id));
     if (!exists) {
@@ -2457,6 +2618,7 @@ function syncRidersFromUsers() {
         phone: currentUser.phone || '',
         rating: 5,
         ratingCount: 0,
+        photo: currentUser.photo || null,
         avatar: '🛵'
       });
     }
@@ -2485,7 +2647,11 @@ function setTrackingRider(rider) {
   const rateName = document.getElementById('rate-rider-name');
   if (nameEl) nameEl.textContent = assignedRider.name;
   if (ratingEl) ratingEl.textContent = formatRiderRating(assignedRider);
-  if (avatarEl) avatarEl.textContent = assignedRider.avatar;
+  if (avatarEl) {
+    avatarEl.innerHTML = assignedRider.photo
+      ? `<img src="${assignedRider.photo}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`
+      : (assignedRider.avatar || '🛵');
+  }
   if (rateName) rateName.textContent = assignedRider.name;
   const tel = '+' + assignedRider.phone.replace(/-/g, '');
   if (phoneEl) {
@@ -2506,6 +2672,14 @@ function setTrackingRider(rider) {
 
 function openTrackingWithRider(address, customerPhone) {
   setTrackingRider();
+  // Best-effort refresh of live rider photos (e.g. for the tracking avatar)
+  if (typeof refreshMgrRiders === 'function') {
+    refreshMgrRiders().then(() => {
+      syncRidersFromUsers();
+      const fresh = assignedRider && sampleRiders.find(r => r.id === assignedRider.id);
+      if (fresh) setTrackingRider(fresh);
+    }).catch(() => {});
+  }
   if (address) document.getElementById('track-address').textContent = address;
   if (customerPhone) document.getElementById('track-phone').textContent = 'Your contact: ' + customerPhone;
   // Live status steps from active order if available
@@ -2517,6 +2691,7 @@ function openTrackingWithRider(address, customerPhone) {
   document.getElementById('tracking-modal')?.classList.add('active');
   currentRiderPos = { lat: 6.8013, lng: -58.1551 };
   activeOrderDest = activeOrderDest || { lat: 6.812, lng: -58.155 };
+  window._proximityAlerted = false;
   setTimeout(() => {
     if (typeof updateCustomerTrackingMap === 'function') {
       updateCustomerTrackingMap(currentRiderPos);
@@ -2630,27 +2805,30 @@ async function submitRiderRatingViaAPI(riderId, stars, comment) {
 
 
 // ===== MANAGER PORTAL =====
+function adMatchesPlacement(ad, placement) {
+  if (!ad || ad.status !== 'Active') return false;
+  if (ad.place === 'all') return true;
+  if (ad.place === 'both') return placement === 'login' || placement === 'customer'; // legacy value
+  return ad.place === placement;
+}
+
+function applyAdBanner(banner, placement) {
+  if (!banner) return;
+  const ad = platformAds.find(a => adMatchesPlacement(a, placement)) || null;
+  const content = ad || DEFAULT_PLATFORM_ADS[placement];
+  const strongEl = banner.querySelector('.ad-body strong');
+  const spanEl = banner.querySelector('.ad-body span');
+  if (strongEl) strongEl.textContent = content.headline;
+  if (spanEl) spanEl.textContent = content.sub;
+  banner.style.display = ''; // always visible — placeholder or real ad
+  banner.classList.toggle('sponsored', !!ad);
+}
+
 function applyPlatformAds() {
-  const loginAd = platformAds.find(a => a.status === 'Active' && (a.place === 'login' || a.place === 'both'));
-  const custAd = platformAds.find(a => a.status === 'Active' && (a.place === 'customer' || a.place === 'both'));
-  // Login banner
-  const loginBanner = document.querySelector('#login-screen .ad-banner');
-  if (loginBanner && loginAd) {
-    loginBanner.querySelector('.ad-body strong').textContent = loginAd.headline;
-    loginBanner.querySelector('.ad-body span').textContent = loginAd.sub;
-    loginBanner.style.display = '';
-  } else if (loginBanner && !loginAd) {
-    loginBanner.style.display = 'none';
-  }
-  // Customer banner
-  const custBanner = document.getElementById('customer-ad-banner');
-  if (custBanner && custAd) {
-    custBanner.querySelector('.ad-body strong').textContent = custAd.headline;
-    custBanner.querySelector('.ad-body span').textContent = custAd.sub;
-    custBanner.style.display = '';
-  } else if (custBanner && !custAd) {
-    custBanner.style.display = 'none';
-  }
+  applyAdBanner(document.querySelector('#login-screen .ad-banner'), 'login');
+  applyAdBanner(document.getElementById('customer-ad-banner'), 'customer');
+  applyAdBanner(document.getElementById('business-ad-banner'), 'business');
+  applyAdBanner(document.getElementById('rider-ad-banner'), 'rider');
 }
 
 function showMgrTab(tab) {
@@ -2659,6 +2837,9 @@ function showMgrTab(tab) {
     const el = document.getElementById('mgr-' + id);
     if (el) el.classList.toggle('active', id === tab);
   });
+  if (tab === 'riders' && typeof refreshMgrRiders === 'function') {
+    refreshMgrRiders().then(() => renderManager());
+  }
   renderManager();
 }
 
@@ -2731,7 +2912,7 @@ function renderManager() {
     `).join('') || '<p class="small">No ads yet</p>';
   }
 
-  const subLabel = (u) => {
+  const subLabel = (u, live) => {
     if (u.role === 'business') {
       const s = u.subscription || 'trial';
       if (s === 'paid') return 'Subscription: Paid' + (u.paidUntil ? ' until ' + new Date(u.paidUntil).toLocaleDateString() : '');
@@ -2739,7 +2920,10 @@ function renderManager() {
       return 'Subscription: Free trial';
     }
     if (u.role === 'customer') return 'Plan: Customer (free)';
-    if (u.role === 'delivery') return 'Plan: Rider (free)';
+    if (u.role === 'delivery') {
+      const plan = live && live.plan === 'paid' ? 'Pro Rider (paid)' : 'Free plan';
+      return `Plan: ${plan}${live ? ` · ${live.activeJobs}/${live.jobCap} active jobs` : ''}`;
+    }
     return '';
   };
 
@@ -2749,16 +2933,24 @@ function renderManager() {
     const list = adminUsers.filter(u => u.role === role);
     el.innerHTML = list.map(u => {
       const logo = (u.logo || (u.businessName && businessLogos[u.businessName])) || null;
+      const live = role === 'delivery' && typeof liveRidersCache !== 'undefined'
+        ? liveRidersCache.find(r => r.id === (u.riderId || u.id))
+        : null;
+      const riderAvatar = live && live.photo
+        ? `<img src="${live.photo}" alt="" style="width:40px;height:40px;border-radius:10px;object-fit:cover">`
+        : (role === 'delivery' ? `<div style="width:40px;height:40px;border-radius:10px;background:#f3f4f6;display:flex;align-items:center;justify-content:center">🛵</div>` : '');
       return `
       <div class="mgr-row">
         <div style="display:flex;gap:10px;align-items:flex-start">
           ${role === 'business' ? (logo
             ? `<img src="${logo}" alt="" style="width:40px;height:40px;border-radius:10px;object-fit:cover">`
             : `<div style="width:40px;height:40px;border-radius:10px;background:#f3f4f6;display:flex;align-items:center;justify-content:center">🏪</div>`) : ''}
+          ${riderAvatar}
           <div style="flex:1">
-            <h4>${u.name}${u.businessName ? ' · ' + u.businessName : ''}</h4>
+            <h4>${u.name}${u.businessName ? ' · ' + u.businessName : ''}${role === 'delivery' ? (live ? (live.online ? ' · 🟢 Online' : ' · ⚪ Offline') : '') : ''}</h4>
             <div class="meta">${u.identifier}${u.phone ? ' · ' + u.phone : ''}</div>
-            <div class="meta"><strong>${subLabel(u)}</strong></div>
+            <div class="meta"><strong>${subLabel(u, live)}</strong></div>
+            ${live && live.rating ? `<div class="meta">⭐ ${live.rating.toFixed ? live.rating.toFixed(1) : live.rating} (${live.ratingCount || 0} ratings)</div>` : ''}
           </div>
         </div>
         <div class="mgr-actions" style="margin-top:8px">
@@ -2876,12 +3068,29 @@ function openMgrAdForm(id) {
   document.getElementById('mgr-ad-save').textContent = ad ? 'Update Ad' : 'Save Ad';
   document.getElementById('mgr-ad-headline').value = ad ? ad.headline : '';
   document.getElementById('mgr-ad-sub').value = ad ? ad.sub : '';
-  document.getElementById('mgr-ad-place').value = ad ? ad.place : 'both';
+  document.getElementById('mgr-ad-place').value = ad ? ad.place : 'all';
   document.getElementById('mgr-ad-status').value = ad ? ad.status : 'Active';
   document.getElementById('mgr-ad-modal')?.classList.add('active');
 }
 
-function saveMgrAd(e) {
+/** Manager-only free platform ads are persisted server-side (GET/POST/DELETE
+ * /api/ads) so they show up for every customer/business/rider device, not
+ * just the manager's own browser. Local `platformAds` + localStorage remain
+ * as an offline cache/fallback. */
+async function refreshAdsFromServer() {
+  if (typeof api !== 'function') return;
+  try {
+    const res = await api('/api/ads');
+    const list = res && (res.ads || (Array.isArray(res) ? res : null));
+    if (Array.isArray(list)) {
+      platformAds = list;
+      try { localStorage.setItem('tgs_platform_ads', JSON.stringify(platformAds)); } catch (_) {}
+    }
+  } catch (_) { /* offline — keep whatever's cached locally */ }
+  applyPlatformAds();
+}
+
+async function saveMgrAd(e) {
   e.preventDefault();
   const id = document.getElementById('mgr-ad-id').value;
   const headline = document.getElementById('mgr-ad-headline').value.trim();
@@ -2889,6 +3098,7 @@ function saveMgrAd(e) {
   const place = document.getElementById('mgr-ad-place').value;
   const status = document.getElementById('mgr-ad-status').value;
   if (!headline) { showToast('Headline required'); return false; }
+  const payload = { id: id || undefined, headline, sub, place, status };
   if (id) {
     const ad = platformAds.find(a => a.id === id);
     if (ad) { ad.headline = headline; ad.sub = sub; ad.place = place; ad.status = status; }
@@ -2901,10 +3111,13 @@ function saveMgrAd(e) {
   closeModal();
   renderManager();
   applyPlatformAds();
+  if (typeof api === 'function') {
+    try { await api('/api/ads', { method: 'POST', body: JSON.stringify(payload) }); } catch (_) {}
+  }
   return false;
 }
 
-function toggleMgrAd(id) {
+async function toggleMgrAd(id) {
   const ad = platformAds.find(a => a.id === id);
   if (!ad) return;
   ad.status = ad.status === 'Active' ? 'Paused' : 'Active';
@@ -2912,12 +3125,18 @@ function toggleMgrAd(id) {
   renderManager();
   applyPlatformAds();
   showToast(ad.status === 'Active' ? 'Ad resumed' : 'Ad paused');
+  if (typeof api === 'function') {
+    try { await api('/api/ads', { method: 'POST', body: JSON.stringify(ad) }); } catch (_) {}
+  }
 }
 
-function deleteMgrAd(id) {
+async function deleteMgrAd(id) {
   if (!confirm('Delete this ad?')) return;
   platformAds = platformAds.filter(a => a.id !== id);
   persistAdminData();
+  if (typeof api === 'function') {
+    try { await api('/api/ads/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (_) {}
+  }
   renderManager();
   applyPlatformAds();
   showToast('Ad deleted');
@@ -3347,6 +3566,15 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 
+/** Live rider status (online, photo, plan, active jobs) for the manager riders panel */
+let liveRidersCache = [];
+async function refreshMgrRiders() {
+  try {
+    const list = await api('/api/riders');
+    if (Array.isArray(list)) liveRidersCache = list;
+  } catch (_) {}
+}
+
 /** Pull live users from backend into manager directory */
 async function refreshManagerFromServer() {
   try {
@@ -3368,6 +3596,7 @@ async function refreshManagerFromServer() {
             phone: su.phone || '',
             email: su.email || '',
             businessName: su.businessName || null,
+            riderId: su.riderId || null,
             subscription: su.role === 'business' ? (su.subscription || 'trial') : 'n/a',
             paidUntil: su.paidUntil || null,
             createdAt: su.createdAt
@@ -3377,7 +3606,8 @@ async function refreshManagerFromServer() {
             name: su.name || exists.name,
             phone: su.phone || exists.phone,
             email: su.email || exists.email,
-            businessName: su.businessName || exists.businessName
+            businessName: su.businessName || exists.businessName,
+            riderId: su.riderId || exists.riderId
           });
         }
       });
@@ -3567,30 +3797,70 @@ function toggleAutoRefresh(on) {
   }
 }
 
+// Cap/plan state for the logged-in rider, refreshed alongside their job list.
+let riderCapState = { activeJobs: 0, jobCap: 3, plan: 'free' };
+
+// Pull my offered jobs from the server — scoped to MY rider id so I only see
+// jobs where I'm currently the closest eligible (online, under-cap) rider.
+// Runs on its own always-on timer (see startRiderJobsPolling) independent of
+// the general "auto-refresh" toggle, since job offers are time-sensitive and
+// a rider shouldn't have to opt in to seeing work.
+async function refreshRiderJobs() {
+  if (!currentUser || currentUser.role !== 'delivery') return;
+  if (typeof api !== 'function') return;
+  try {
+    const myRiderId = currentUser && (currentUser.riderId || currentUser.id);
+    const jobsUrl = myRiderId ? '/api/riders/jobs?riderId=' + encodeURIComponent(myRiderId) : '/api/riders/jobs';
+    const jobs = await api(jobsUrl);
+    const list = jobs && (jobs.jobs || (Array.isArray(jobs) ? jobs : null));
+    if (jobs && typeof jobs.jobCap === 'number') {
+      riderCapState = { activeJobs: jobs.activeJobs || 0, jobCap: jobs.jobCap, plan: jobs.jobCap > 3 ? 'paid' : 'free' };
+    }
+    if (list) {
+      list.forEach(j => {
+        if (!j || !j.id || !String(j.id).startsWith('ORD-')) return;
+        if (!j.item || !j.customer) return;
+        const existingIdx = riderOrders.findIndex(r => r.id === j.id);
+        if (existingIdx === -1) riderOrders.push(j);
+        else riderOrders[existingIdx] = { ...riderOrders[existingIdx], distanceKm: j.distanceKm };
+      });
+      // Drop still-available-elsewhere jobs the server no longer offers to
+      // me (taken by someone else, or I'm no longer the closest eligible
+      // rider) as well as any non-ORD ghost jobs — but never drop a job
+      // I've already accepted/picked up (status moves off 'available').
+      const offeredIds = new Set(list.map(j => j.id));
+      riderOrders = riderOrders.filter(r => r && String(r.id).startsWith('ORD-') && r.item &&
+        (r.status && r.status !== 'available' ? true : offeredIds.has(r.id)));
+      saveRiderOrders();
+    }
+    if (typeof renderRider === 'function' && document.getElementById('delivery-app')?.classList.contains('active')) {
+      renderRider();
+    }
+  } catch (e) {
+    console.warn('refreshRiderJobs', e);
+  }
+}
+
+let riderJobsTimer = null;
+function startRiderJobsPolling() {
+  stopRiderJobsPolling();
+  refreshRiderJobs();
+  riderJobsTimer = setInterval(refreshRiderJobs, 6000);
+}
+function stopRiderJobsPolling() {
+  if (riderJobsTimer) {
+    clearInterval(riderJobsTimer);
+    riderJobsTimer = null;
+  }
+}
+
 async function runAutoRefresh() {
   if (!autoRefreshOn) return;
   const role = currentUser && currentUser.role;
   try {
     // Always refresh deals for customers / general
     if (typeof refreshDealsFromServer === 'function') await refreshDealsFromServer();
-
-    // Rider jobs from server
-    if (typeof api === 'function') {
-      const jobs = await api('/api/riders/jobs');
-      const list = jobs && (jobs.jobs || (Array.isArray(jobs) ? jobs : null));
-      if (list) {
-        list.forEach(j => {
-          if (!j || !j.id || !String(j.id).startsWith('ORD-')) return;
-          if (!j.item || !j.customer) return;
-          if (!riderOrders.find(r => r.id === j.id)) riderOrders.push(j);
-        });
-        // Drop non-ORD ghost jobs
-        const before = riderOrders.length;
-        riderOrders = riderOrders.filter(r => r && String(r.id).startsWith('ORD-') && r.item);
-        if (riderOrders.length !== before) saveRiderOrders();
-        else saveRiderOrders();
-      }
-    }
+    if (typeof refreshAdsFromServer === 'function') await refreshAdsFromServer();
 
     if (document.getElementById('customer-app')?.classList.contains('active')) {
       if (typeof loadLiveDeals === 'function') loadLiveDeals();
@@ -3612,6 +3882,7 @@ async function runAutoRefresh() {
     }
     if (document.getElementById('manager-app')?.classList.contains('active')) {
       if (typeof refreshManagerFromServer === 'function') await refreshManagerFromServer();
+      if (typeof refreshMgrRiders === 'function') await refreshMgrRiders();
       if (typeof renderManager === 'function') renderManager();
     }
   } catch (e) {
@@ -3709,12 +3980,15 @@ function reactivateDeal(id) {
 }
 
 /** Rider marks picked up at business */
-function markOrderPickedUp(orderId) {
+async function markOrderPickedUp(orderId) {
   const job = riderOrders.find(o => o.id === orderId) || window._activeRiderJob;
   if (!job) return;
   job.status = 'picked_up';
   job.pickedUpAt = new Date().toISOString();
   if (typeof saveRiderOrders === 'function') saveRiderOrders();
+  if (typeof api === 'function') {
+    try { await api('/api/orders/' + encodeURIComponent(orderId) + '/status', { method: 'PATCH', body: JSON.stringify({ status: 'picked_up' }) }); } catch (_) {}
+  }
   if (typeof updateLiveOrderStatus === 'function') {
     updateLiveOrderStatus(orderId, 'picked_up', {
       rider: assignedRider || (currentUser && { name: currentUser.name, phone: currentUser.phone })
