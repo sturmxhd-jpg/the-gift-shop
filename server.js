@@ -33,17 +33,32 @@ let availableJobs = [];
 
 
 // Persistent storage (users + delivery proofs)
-const DATA_DIR = path.join(ROOT, 'data');
+// DATA_DIR points at a mounted persistent volume so this survives redeploys —
+// otherwise it lives on the app's own throwaway filesystem, which most hosts
+// (Railway, Render, etc.) rebuild from scratch on every deploy.
+// - Railway: attaching a Volume to this service auto-sets RAILWAY_VOLUME_MOUNT_PATH —
+//   no manual config needed, it's picked up automatically below.
+// - Any host: set DATA_DIR yourself to override.
+// - Neither set (e.g. local `node server.js`): falls back to ./data.
+// See RAILWAY_DEPLOY_GUIDE.md for step-by-step Volume setup.
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : (process.env.RAILWAY_VOLUME_MOUNT_PATH
+      ? path.resolve(process.env.RAILWAY_VOLUME_MOUNT_PATH)
+      : path.join(ROOT, 'data'));
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const PROOFS_FILE = path.join(DATA_DIR, 'proofs.json');
 const DEALS_FILE = path.join(DATA_DIR, 'deals.json');
 const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
 const ORDERS_FILE = path.join(DATA_DIR, 'orders.json');
+const RIDERS_FILE = path.join(DATA_DIR, 'riders.json');
+const RATINGS_FILE = path.join(DATA_DIR, 'ratings.json');
 const META_FILE = path.join(DATA_DIR, 'meta.json');
 const OUTBOX_DIR = path.join(DATA_DIR, 'outbox');
+const DEAL_PHOTOS_DIR = path.join(DATA_DIR, 'deal-photos');
 
 function ensureDataDirs() {
-  [DATA_DIR, OUTBOX_DIR, path.join(DATA_DIR, 'proofs')].forEach(d => {
+  [DATA_DIR, OUTBOX_DIR, path.join(DATA_DIR, 'proofs'), DEAL_PHOTOS_DIR].forEach(d => {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
   });
 }
@@ -63,25 +78,48 @@ let users = loadJSON(USERS_FILE, []);
 let deliveryProofs = loadJSON(PROOFS_FILE, []);
 deals = loadJSON(DEALS_FILE, []);
 availableJobs = loadJSON(JOBS_FILE, []);
-// orders may already exist as let orders = []
+riders = loadJSON(RIDERS_FILE, []);
+// orders/ratings already exist as const orders = [] / const ratings = []
 try { const o = loadJSON(ORDERS_FILE, null); if (Array.isArray(o)) { while (orders.length) orders.pop(); o.forEach(x => orders.push(x)); } } catch (_) {}
+try { const r = loadJSON(RATINGS_FILE, null); if (Array.isArray(r)) { while (ratings.length) ratings.pop(); r.forEach(x => ratings.push(x)); } } catch (_) {}
 function persistDeals() { saveJSON(DEALS_FILE, deals); }
 function persistJobs() { saveJSON(JOBS_FILE, availableJobs); }
 function persistOrders() { saveJSON(ORDERS_FILE, orders); }
+function persistRiders() { saveJSON(RIDERS_FILE, riders); }
+function persistRatings() { saveJSON(RATINGS_FILE, ratings); }
 function persistAllData() {
   persistUsers();
   persistDeals();
   persistJobs();
   persistOrders();
   persistProofs();
-  saveJSON(META_FILE, { lastSaved: new Date().toISOString(), users: users.length, deals: deals.length, jobs: availableJobs.length });
+  persistRiders();
+  persistRatings();
+  saveJSON(META_FILE, { lastSaved: new Date().toISOString(), users: users.length, deals: deals.length, jobs: availableJobs.length, riders: riders.length });
 }
-console.log('[Gift Shop] Loaded data: users=' + users.length + ' deals=' + deals.length + ' jobs=' + availableJobs.length);
+console.log('[Gift Shop] Data dir: ' + DATA_DIR);
+console.log('[Gift Shop] Loaded data: users=' + users.length + ' deals=' + deals.length + ' jobs=' + availableJobs.length + ' riders=' + riders.length + ' orders=' + orders.length + ' ratings=' + ratings.length);
+if (!process.env.DATA_DIR && !process.env.RAILWAY_VOLUME_MOUNT_PATH) {
+  console.log('[Gift Shop] WARNING: no persistent volume detected — using local folder ' + DATA_DIR + '. On Railway/Render this folder is wiped on every redeploy unless it sits on a mounted persistent volume (or DATA_DIR points at one). See RAILWAY_DEPLOY_GUIDE.md.');
+}
 
 const passwordResetTokens = new Map(); // email -> { code, exp }
 
 function persistUsers() { saveJSON(USERS_FILE, users); }
 function persistProofs() { saveJSON(PROOFS_FILE, deliveryProofs); }
+
+/** Decode a data:image/...;base64,... URL and save it to disk, returning a public /data/... URL. Returns the input unchanged if it isn't a data URL (e.g. already a saved path, or null). */
+function saveDealPhoto(id, photoInput) {
+  if (!photoInput) return null;
+  if (!String(photoInput).startsWith('data:image')) return photoInput; // already a URL/path
+  const m = String(photoInput).match(/^data:(image\/\w+);base64,(.+)$/);
+  if (!m) return null;
+  const ext = m[1].split('/')[1] === 'jpeg' ? 'jpg' : m[1].split('/')[1];
+  const fname = 'DEAL-' + id + '-' + Date.now() + '.' + ext;
+  const fpath = path.join(DEAL_PHOTOS_DIR, fname);
+  fs.writeFileSync(fpath, Buffer.from(m[2], 'base64'));
+  return '/data/deal-photos/' + fname;
+}
 
 /** Send email: uses RESEND_API_KEY if set, otherwise writes to data/outbox for review */
 async function sendEmail({ to, subject, text, html, attachments }) {
@@ -210,10 +248,15 @@ function readBody(req) {
 }
 
 function serveStatic(req, res, pathname) {
-  // Allow serving stored proof images
-  let filePath = path.join(ROOT, pathname === '/' ? 'index.html' : pathname);
+  // /data/... is served from DATA_DIR (which may be a separate mounted
+  // volume, not necessarily under ROOT) — everything else from ROOT.
+  const isDataPath = pathname.startsWith('/data/');
+  const base = isDataPath ? DATA_DIR : ROOT;
+  let filePath = isDataPath
+    ? path.join(DATA_DIR, pathname.slice('/data/'.length))
+    : path.join(ROOT, pathname === '/' ? 'index.html' : pathname);
   // Prevent path traversal
-  if (!filePath.startsWith(ROOT)) {
+  if (!filePath.startsWith(base)) {
     res.writeHead(403); return res.end('Forbidden');
   }
   fs.readFile(filePath, (err, data) => {
@@ -282,6 +325,10 @@ async function handleAPI(req, res, pathname, query) {
       }
       const id = body.id || (deals.length ? Math.max(...deals.map(d => Number(d.id) || 0)) + 1 : Date.now());
       const existing = deals.find(d => String(d.id) === String(id));
+      let photo = (existing && existing.photo) || null;
+      if (body.photo && body.photo !== '[image]') {
+        try { photo = saveDealPhoto(id, body.photo); } catch (e) { console.warn('saveDealPhoto failed', e.message); }
+      }
       const deal = {
         id,
         business: body.business || (existing && existing.business) || 'Local Business',
@@ -295,7 +342,7 @@ async function handleAPI(req, res, pathname, query) {
         daysLeft: body.daysLeft || 5,
         distance: body.distance || '1.0 km',
         delivery: body.delivery !== false,
-        photo: body.photo && body.photo !== '[image]' ? body.photo : (existing && existing.photo) || null,
+        photo,
         _paused: !!body._paused
       };
       if (existing) {
@@ -355,6 +402,7 @@ async function handleAPI(req, res, pathname, query) {
       };
       order.total = order.subtotal + order.deliveryFee;
       orders.unshift(order);
+      persistOrders();
       return sendJSON(res, 201, {
         success: true, order,
         message: fulfillment === 'delivery'
@@ -383,6 +431,7 @@ async function handleAPI(req, res, pathname, query) {
       if (body.podPhoto) order.podPhoto = body.podPhoto;
       if (body.podNotes !== undefined) order.podNotes = body.podNotes;
       if (body.status === 'delivered') order.deliveredAt = new Date().toISOString();
+      persistOrders();
       return sendJSON(res, 200, order);
     } catch (e) {
       return sendJSON(res, 400, { error: 'Invalid JSON' });
@@ -468,6 +517,7 @@ async function handleAPI(req, res, pathname, query) {
       if (typeof body.lat === 'number') rider.lat = body.lat;
       if (typeof body.lng === 'number') rider.lng = body.lng;
       if (typeof body.online === 'boolean') rider.online = body.online;
+      persistRiders();
       return sendJSON(res, 200, { id: rider.id, lat: rider.lat, lng: rider.lng, online: rider.online });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Invalid JSON' });
@@ -487,11 +537,13 @@ async function handleAPI(req, res, pathname, query) {
       const oldTotal = rider.rating * rider.ratingCount;
       rider.ratingCount += 1;
       rider.rating = Math.round(((oldTotal + stars) / rider.ratingCount) * 10) / 10;
+      persistRiders();
       const rating = {
         id: uuid(), riderId, orderId: orderId || null,
         stars, comment: comment || '', createdAt: new Date().toISOString()
       };
       ratings.push(rating);
+      persistRatings();
       return sendJSON(res, 201, {
         success: true, rating,
         rider: { id: rider.id, name: rider.name, rating: rider.rating, ratingCount: rider.ratingCount }
@@ -684,6 +736,7 @@ async function handleAPI(req, res, pathname, query) {
           lat: 6.8013,
           lng: -58.1551
         });
+        persistRiders();
       }
 
       const roleLabel = role === 'business' ? 'Business' : role === 'delivery' ? 'Delivery partner' : role === 'manager' ? 'Manager' : 'Customer';
@@ -868,7 +921,9 @@ async function handleAPI(req, res, pathname, query) {
       deals,
       jobs: availableJobs,
       orders,
-      proofs: deliveryProofs
+      proofs: deliveryProofs,
+      riders,
+      ratings
     });
   }
 
@@ -880,7 +935,9 @@ async function handleAPI(req, res, pathname, query) {
       if (body.deals && Array.isArray(body.deals)) { deals = body.deals; persistDeals(); }
       if (body.jobs && Array.isArray(body.jobs)) { availableJobs = body.jobs; persistJobs(); }
       if (body.orders && Array.isArray(body.orders)) { orders.length = 0; body.orders.forEach(x => orders.push(x)); persistOrders(); }
-      return sendJSON(res, 200, { success: true, counts: { users: users.length, deals: deals.length } });
+      if (body.riders && Array.isArray(body.riders)) { riders = body.riders; persistRiders(); }
+      if (body.ratings && Array.isArray(body.ratings)) { ratings.length = 0; body.ratings.forEach(x => ratings.push(x)); persistRatings(); }
+      return sendJSON(res, 200, { success: true, counts: { users: users.length, deals: deals.length, riders: riders.length } });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Restore failed' });
     }

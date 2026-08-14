@@ -1429,7 +1429,9 @@ async function submitNewDeal(e) {
       if (typeof saveLiveDeals === 'function') saveLiveDeals();
       if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
       if (typeof api === 'function' && cd) {
-        api('/api/deals', { method: 'POST', body: JSON.stringify({ ...cd, photo: cd.photo ? '[image]' : null }) });
+        // Send the real photo (server saves it to disk and returns a /data/... URL)
+        // instead of only keeping it in this browser's local storage.
+        api('/api/deals', { method: 'POST', body: JSON.stringify({ ...cd, photo: cd.photo || null }) });
       }
     }
     closeModal();
@@ -1491,9 +1493,11 @@ async function submitNewDeal(e) {
   try { localStorage.setItem('tgs_deals_bump', String(Date.now())); } catch (_) {}
 
   if (typeof api === 'function') {
+    // Send the real photo (server saves it to disk and returns a /data/... URL)
+    // instead of only keeping it in this browser's local storage.
     await api('/api/deals', {
       method: 'POST',
-      body: JSON.stringify({ ...customerDeal, photo: photo ? '[image]' : null })
+      body: JSON.stringify({ ...customerDeal, photo: photo || null })
     });
   }
   // Force customer feed to pick up the change even if already open
