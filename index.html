@@ -251,6 +251,7 @@
       <div class="profile-links">
         <div class="profile-link">📍 Delivery addresses</div>
         <div class="profile-link">🛒 Order history</div>
+        <div class="profile-link" onclick="openCustomerAdForm()">📢 Advertise with us</div>
         <div class="profile-link">⚙️ Settings</div>
         <div class="profile-link">💬 Help & support</div>
         <div class="profile-link" onclick="logout()" style="color:#dc2626">🚪 Sign out</div>
@@ -850,6 +851,26 @@
         <div id="mgr-live-snapshot" class="activity-list"></div>
         <h3 style="margin-top:16px">Customer deals feed</h3>
         <div id="mgr-deals-snapshot"></div>
+
+        <h3 style="margin-top:16px">Data backup &amp; restore</h3>
+        <p class="small" style="margin-bottom:10px">
+          Accounts, deals, orders and riders live on the server's storage — if your host wipes that storage on a
+          redeploy (no persistent volume attached), everyone would have to sign up again. This browser keeps its own
+          backup copy automatically, and you can download one any time so nobody loses their account.
+        </p>
+        <div id="mgr-restore-banner" style="display:none;background:#fef3c7;border-radius:10px;padding:12px;margin-bottom:10px">
+          <strong>⚠️ Server data looks empty</strong>
+          <div class="small" id="mgr-restore-banner-detail" style="margin:4px 0 8px"></div>
+          <button type="button" class="primary-btn small" onclick="restoreFromLocalCache()">♻️ Restore from this browser's backup</button>
+        </div>
+        <div class="mgr-row">
+          <div class="meta" id="mgr-backup-status">No local backup yet</div>
+          <div class="mgr-actions" style="margin-top:8px">
+            <button type="button" class="btn-edit" onclick="downloadManagerBackup()">⬇️ Download backup now</button>
+            <button type="button" class="btn-edit" onclick="document.getElementById('mgr-restore-file-input').click()">⬆️ Restore from file</button>
+            <input type="file" id="mgr-restore-file-input" accept="application/json" style="display:none" onchange="restoreFromBackupFile(event)">
+          </div>
+        </div>
       </div>
 
 
@@ -972,6 +993,56 @@
           <input type="text" id="biz-ad-txid" placeholder="e.g. MMG-12345678" required>
         </div>
         <button type="submit" class="primary-btn">I’ve paid — Publish Ad</button>
+      </form>
+    </div>
+  </div>
+  <!-- Customer Ad form modal -->
+  <div id="cust-ad-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Advertise on The Gift Shop</h2>
+      <p class="small" style="margin-bottom:10px">Your ad rotates with other active ads (10 seconds each) across the app. 3-day minimum · GYD 1,000/day, or GYD 5,000 for a 7-day placement.</p>
+      <form onsubmit="return submitCustomerAd(event)">
+        <div class="form-group">
+          <label>Ad headline</label>
+          <input type="text" id="cust-ad-headline" required placeholder="e.g. Selling fresh eddoes — call to order!" maxlength="80">
+        </div>
+        <div class="form-group">
+          <label>Subtext</label>
+          <input type="text" id="cust-ad-sub" placeholder="Short line — price, contact, location" maxlength="100">
+        </div>
+        <div class="form-group">
+          <label>Where should it show?</label>
+          <select id="cust-ad-place">
+            <option value="all">Everywhere (all screens)</option>
+            <option value="customer">Customer home</option>
+            <option value="login">Sign-in screen</option>
+            <option value="business">Business portal</option>
+            <option value="rider">Rider portal</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Number of days (3-day minimum)</label>
+          <input type="number" id="cust-ad-days" min="3" value="3" oninput="updateCustomerAdCost()">
+        </div>
+        <button type="button" class="ad-price-opt" style="width:100%;margin-bottom:10px;text-align:left;display:flex;justify-content:space-between;align-items:center" onclick="document.getElementById('cust-ad-days').value=7;updateCustomerAdCost()">
+          <span>🎉 <strong style="color:inherit">7-day package</strong> — best value</span>
+          <strong>GYD 5,000</strong>
+        </button>
+        <div class="mmg-pay-box">
+          <div class="mmg-label">Pay via MMG to</div>
+          <div class="mmg-number">61214940</div>
+          <div class="mmg-amount">Amount due: <strong id="cust-ad-amount">GYD 3,000</strong></div>
+        </div>
+        <div class="form-group">
+          <label>Your MMG phone</label>
+          <input type="tel" id="cust-ad-mmg" placeholder="592-6XX-XXXX" required>
+        </div>
+        <div class="form-group">
+          <label>MMG transaction ID</label>
+          <input type="text" id="cust-ad-txid" placeholder="e.g. MMG-12345678" required>
+        </div>
+        <button type="submit" class="primary-btn">I’ve paid in full — Submit Ad</button>
       </form>
     </div>
   </div>

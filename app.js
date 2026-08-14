@@ -725,7 +725,10 @@ function enterApp(role) {
     document.getElementById("manager-app").classList.add("active");
     const lbl = document.getElementById("mgr-user-label");
     if (lbl) lbl.textContent = "raulkc";
-    if (typeof refreshManagerFromServer === "function") {
+    // Keeps the riders/businesses/customers panels live on its own timer —
+    // see refreshManagerPanels().
+    if (typeof startManagerPolling === "function") startManagerPolling();
+    else if (typeof refreshManagerFromServer === "function") {
       Promise.all([refreshManagerFromServer(), typeof refreshMgrRiders === "function" ? refreshMgrRiders() : null])
         .then(() => renderManager());
     } else renderManager();
@@ -759,6 +762,7 @@ function logout() {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   document.getElementById("role-selector").classList.add("active");
   if (typeof stopRiderJobsPolling === "function") stopRiderJobsPolling();
+  if (typeof stopManagerPolling === "function") stopManagerPolling();
   showToast("Signed out");
 }
 
@@ -1859,11 +1863,19 @@ const DEFAULT_PLATFORM_ADS = {
   business: { headline: 'Get more customers', sub: 'Upgrade to Growth or Premium for lower commission & delivery' },
   rider: { headline: 'Ride more, earn more', sub: 'Upgrade to Pro Rider for up to 10 jobs at once — GYD 5,000/mo' }
 };
+// Multiple paid ads (manager, business, customer) can be Active for the same
+// placement at once — applyAdBanner() rotates through all of them every 10s
+// so nobody's paid slot gets buried behind someone else's. Declared here
+// (before Init below) since applyPlatformAds() runs immediately at load time.
+const AD_ROTATE_MS = 10000;
+const adCarousels = {}; // placement -> { index, pool, sponsored, banners: Set<Element>, timer }
+let adsPollTimer = null; // set by startAdsPolling() below, called from Init
 
 // Init
 renderDeals();
 applyPlatformAds(); // show default ad placeholders immediately, before any server round-trip
-if (typeof refreshAdsFromServer === 'function') refreshAdsFromServer();
+if (typeof startAdsPolling === 'function') startAdsPolling();
+else if (typeof refreshAdsFromServer === 'function') refreshAdsFromServer();
 
 // ===== REAL-TIME GPS TRACKING =====
 let riderWatchId = null;
@@ -2807,21 +2819,49 @@ async function submitRiderRatingViaAPI(riderId, stars, comment) {
 // ===== MANAGER PORTAL =====
 function adMatchesPlacement(ad, placement) {
   if (!ad || ad.status !== 'Active') return false;
+  if (ad.expiresAt && new Date(ad.expiresAt).getTime() <= Date.now()) return false; // paid window over
   if (ad.place === 'all') return true;
   if (ad.place === 'both') return placement === 'login' || placement === 'customer'; // legacy value
   return ad.place === placement;
 }
 
-function applyAdBanner(banner, placement) {
-  if (!banner) return;
-  const ad = platformAds.find(a => adMatchesPlacement(a, placement)) || null;
-  const content = ad || DEFAULT_PLATFORM_ADS[placement];
+function renderAdIntoBanner(banner, content, sponsored) {
+  if (!banner || !content) return;
   const strongEl = banner.querySelector('.ad-body strong');
   const spanEl = banner.querySelector('.ad-body span');
   if (strongEl) strongEl.textContent = content.headline;
   if (spanEl) spanEl.textContent = content.sub;
   banner.style.display = ''; // always visible — placeholder or real ad
-  banner.classList.toggle('sponsored', !!ad);
+  banner.classList.toggle('sponsored', !!sponsored);
+}
+
+function applyAdBanner(banner, placement) {
+  if (!banner) return;
+  const matches = platformAds.filter(a => adMatchesPlacement(a, placement));
+  const sponsored = matches.length > 0;
+  const pool = sponsored ? matches : [DEFAULT_PLATFORM_ADS[placement]];
+
+  let entry = adCarousels[placement];
+  if (!entry) {
+    entry = adCarousels[placement] = { index: 0, pool, sponsored, banners: new Set() };
+  } else {
+    entry.pool = pool;
+    entry.sponsored = sponsored;
+    if (entry.index >= pool.length) entry.index = 0;
+  }
+  entry.banners.add(banner);
+  renderAdIntoBanner(banner, pool[entry.index], sponsored);
+
+  if (!entry.timer) {
+    entry.timer = setInterval(() => {
+      if (!entry.pool.length) return;
+      entry.index = (entry.index + 1) % entry.pool.length;
+      entry.banners.forEach(b => {
+        if (document.body.contains(b)) renderAdIntoBanner(b, entry.pool[entry.index], entry.sponsored);
+        else entry.banners.delete(b);
+      });
+    }, AD_ROTATE_MS);
+  }
 }
 
 function applyPlatformAds() {
@@ -2863,9 +2903,13 @@ function renderManager() {
   set('mgr-stat-orders', orderCount || (typeof incomingOrders !== 'undefined' ? incomingOrders.length : 0));
 
   const fmt = n => 'GYD ' + (n || 0).toLocaleString();
+  // Ad revenue is computed straight from the live (server-synced) ads list
+  // rather than the local-only payment ledger, since a customer or business
+  // can purchase an ad from a completely different device than the manager's.
+  const adRevenue = platformAds.reduce((s, a) => s + (Number(a.amount) || 0), 0);
   set('mgr-rev-sub', fmt(platformRevenue.subscriptions));
-  set('mgr-rev-ads', fmt(platformRevenue.ads));
-  set('mgr-rev-total', fmt((platformRevenue.subscriptions || 0) + (platformRevenue.ads || 0)));
+  set('mgr-rev-ads', fmt(adRevenue));
+  set('mgr-rev-total', fmt((platformRevenue.subscriptions || 0) + adRevenue));
 
   // Live snapshot
   const snap = document.getElementById('mgr-live-snapshot');
@@ -2899,17 +2943,24 @@ function renderManager() {
   // Ads list
   const adList = document.getElementById('mgr-ad-list');
   if (adList) {
-    adList.innerHTML = platformAds.map(a => `
+    adList.innerHTML = platformAds.map(a => {
+      const paidInfo = a.source === 'customer'
+        ? `💰 Paid ad · GYD ${(a.amount || 0).toLocaleString()} · ${a.days || '?'} day(s) · by ${a.customerName || 'Customer'}${a.expiresAt ? ' · expires ' + new Date(a.expiresAt).toLocaleDateString() : ''}`
+        : (a.source === 'business'
+          ? `💰 Paid ad · GYD ${(a.amount || 0).toLocaleString()} · ${a.business || 'Business'}${a.ends ? ' · expires ' + new Date(a.ends).toLocaleDateString() : ''}`
+          : '🆓 Manager ad (free)');
+      return `
       <div class="mgr-row">
         <h4>${a.headline}</h4>
-        <div class="meta">${a.sub || ''} · ${a.place} · <strong>${a.status}</strong>${a.business ? ' · ' + a.business : ''}${a.source ? ' · ' + a.source : ''}</div>
+        <div class="meta">${a.sub || ''} · ${a.place} · <strong>${a.status}</strong></div>
+        <div class="meta">${paidInfo}</div>
         <div class="mgr-actions">
           <button type="button" class="btn-edit" onclick="openMgrAdForm('${a.id}')">✏️ Edit</button>
           <button type="button" onclick="toggleMgrAd('${a.id}')">${a.status === 'Active' ? '⏸ Pause' : '▶ Resume'}</button>
           <button type="button" class="btn-del" onclick="deleteMgrAd('${a.id}')">🗑 Delete</button>
         </div>
-      </div>
-    `).join('') || '<p class="small">No ads yet</p>';
+      </div>`;
+    }).join('') || '<p class="small">No ads yet</p>';
   }
 
   const subLabel = (u, live) => {
@@ -2982,8 +3033,8 @@ function renderManager() {
   const fmt2 = n => 'GYD ' + (n || 0).toLocaleString();
   const set2 = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   set2('mgr-pay-sub', fmt2(platformRevenue.subscriptions));
-  set2('mgr-pay-ads', fmt2(platformRevenue.ads));
-  set2('mgr-pay-total', fmt2((platformRevenue.subscriptions || 0) + (platformRevenue.ads || 0)));
+  set2('mgr-pay-ads', fmt2(adRevenue));
+  set2('mgr-pay-total', fmt2((platformRevenue.subscriptions || 0) + adRevenue));
   const paidSubs = adminUsers.filter(u => u.role === 'business' && u.subscription === 'paid');
   set2('mgr-pay-recurring', String(paidSubs.length));
 
@@ -3088,6 +3139,23 @@ async function refreshAdsFromServer() {
     }
   } catch (_) { /* offline — keep whatever's cached locally */ }
   applyPlatformAds();
+}
+
+// Ads (manager/business/customer-purchased) matter on every screen, including
+// the sign-in screen before anyone is logged in, so this polls independently
+// of both the per-role pollers above and the general auto-refresh toggle —
+// a newly-purchased ad from another device shows up here within ~20s without
+// needing a page reload.
+function startAdsPolling() {
+  stopAdsPolling();
+  refreshAdsFromServer();
+  adsPollTimer = setInterval(refreshAdsFromServer, 20000);
+}
+function stopAdsPolling() {
+  if (adsPollTimer) {
+    clearInterval(adsPollTimer);
+    adsPollTimer = null;
+  }
 }
 
 async function saveMgrAd(e) {
@@ -3296,6 +3364,77 @@ function submitBizAd(e) {
   renderBizAds();
   if (typeof applyPlatformAds === 'function') applyPlatformAds();
   showToast('Ad published for ' + days + ' day(s)! 📢');
+  return false;
+}
+
+// ===== Customer-purchased ads (3-day min · GYD 1,000/day, or GYD 5,000/7 days) =====
+const CUSTOMER_AD_MIN_DAYS = 3;
+const CUSTOMER_AD_WEEK_DAYS = 7;
+const CUSTOMER_AD_WEEK_RATE = 5000;
+function customerAdCost(days) {
+  const d = Math.max(CUSTOMER_AD_MIN_DAYS, Math.floor(Number(days) || 0));
+  return d === CUSTOMER_AD_WEEK_DAYS ? CUSTOMER_AD_WEEK_RATE : d * 1000;
+}
+function updateCustomerAdCost() {
+  const daysInput = document.getElementById('cust-ad-days');
+  let days = Math.floor(Number(daysInput.value) || 0);
+  if (days < CUSTOMER_AD_MIN_DAYS) {
+    days = CUSTOMER_AD_MIN_DAYS;
+    daysInput.value = days;
+  }
+  const amt = document.getElementById('cust-ad-amount');
+  if (amt) amt.textContent = 'GYD ' + customerAdCost(days).toLocaleString();
+}
+function openCustomerAdForm() {
+  if (!currentUser || currentUser.role !== 'customer') {
+    showToast('Sign in as a customer to advertise');
+    return;
+  }
+  document.getElementById('cust-ad-headline').value = '';
+  document.getElementById('cust-ad-sub').value = '';
+  document.getElementById('cust-ad-place').value = 'all';
+  document.getElementById('cust-ad-days').value = CUSTOMER_AD_MIN_DAYS;
+  document.getElementById('cust-ad-mmg').value = currentUser.phone || '';
+  document.getElementById('cust-ad-txid').value = '';
+  updateCustomerAdCost();
+  document.getElementById('cust-ad-modal')?.classList.add('active');
+}
+async function submitCustomerAd(e) {
+  e.preventDefault();
+  const headline = document.getElementById('cust-ad-headline').value.trim();
+  const sub = document.getElementById('cust-ad-sub').value.trim();
+  const place = document.getElementById('cust-ad-place').value;
+  const days = Math.max(CUSTOMER_AD_MIN_DAYS, Math.floor(Number(document.getElementById('cust-ad-days').value) || CUSTOMER_AD_MIN_DAYS));
+  const mmgPhone = document.getElementById('cust-ad-mmg').value.trim();
+  const txid = document.getElementById('cust-ad-txid').value.trim();
+  if (!headline) { showToast('Enter a headline'); return false; }
+  if (mmgPhone.length < 7 || txid.length < 4) {
+    showToast('Enter your MMG phone and transaction ID after paying in full');
+    return false;
+  }
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Submitting…'; }
+  const res = await api('/api/ads/customer', {
+    method: 'POST',
+    body: JSON.stringify({
+      headline, sub, place, days, mmgPhone, txid,
+      customerId: currentUser.id,
+      customerName: currentUser.name || 'Customer'
+    })
+  });
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'I’ve paid in full — Submit Ad'; }
+  if (res && res.success) {
+    if (typeof logActivity === 'function') {
+      logActivity('ad', 'Customer ad published: ' + headline + ' (GYD ' + res.amount + ' · ' + res.days + ' day(s))', {
+        customer: currentUser.name
+      });
+    }
+    closeModal();
+    if (typeof refreshAdsFromServer === 'function') await refreshAdsFromServer();
+    showToast('Your ad is live for ' + res.days + ' day(s)! 📢');
+  } else {
+    showToast((res && res.error) || 'Could not publish ad — please try again');
+  }
   return false;
 }
 
@@ -3617,6 +3756,136 @@ async function refreshManagerFromServer() {
   if (typeof syncRidersFromUsers === 'function') syncRidersFromUsers();
 }
 
+// ===== Embedded data backup & restore =====
+// Most hosts (Railway/Render, etc.) rebuild the app's filesystem from
+// scratch on every redeploy unless a persistent volume is attached — that
+// would otherwise force every customer, business and rider to sign up
+// again. As a safety net (not a substitute for attaching real persistent
+// storage — see RAILWAY_DEPLOY_GUIDE.md), this browser silently keeps its
+// own copy of the full account/order/rider dataset, and the manager can
+// always download or upload one manually too.
+const ADMIN_BACKUP_KEY = 'tgs_admin_backup_cache';
+
+function saveLocalBackupCache(payload) {
+  try {
+    localStorage.setItem(ADMIN_BACKUP_KEY, JSON.stringify({ savedAt: new Date().toISOString(), data: payload }));
+  } catch (_) {}
+}
+function loadLocalBackupCache() {
+  try {
+    const raw = localStorage.getItem(ADMIN_BACKUP_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) { return null; }
+}
+
+/** Silently refresh the browser's local backup copy + update the status line / restore banner. Called on every manager poll tick. */
+async function autoBackupToLocalCache() {
+  if (typeof api !== 'function') return;
+  const backup = await api('/api/admin/backup');
+  const statusEl = document.getElementById('mgr-backup-status');
+  const banner = document.getElementById('mgr-restore-banner');
+  const bannerDetail = document.getElementById('mgr-restore-banner-detail');
+  if (!backup || backup.success === false) return;
+
+  const liveUserCount = Array.isArray(backup.usersFull) ? backup.usersFull.length : 0;
+  const cached = loadLocalBackupCache();
+  const cachedCount = cached && Array.isArray(cached.data && cached.data.usersFull) ? cached.data.usersFull.length : 0;
+
+  // Only overwrite the local cache when the server actually has data —
+  // never let an empty/fresh server silently erase a good backup.
+  if (liveUserCount > 0) {
+    saveLocalBackupCache(backup);
+  }
+
+  if (statusEl) {
+    if (liveUserCount > 0) {
+      statusEl.textContent = `Last backed up to this browser: ${new Date().toLocaleString()} · ${liveUserCount} account(s)`;
+    } else if (cached) {
+      statusEl.textContent = `Server has 0 accounts — last known-good backup: ${new Date(cached.savedAt).toLocaleString()} · ${cachedCount} account(s)`;
+    } else {
+      statusEl.textContent = 'No local backup yet';
+    }
+  }
+
+  // Server looks freshly wiped but this browser remembers a real backup —
+  // offer one-click recovery.
+  if (banner) {
+    if (liveUserCount === 0 && cachedCount > 0) {
+      banner.style.display = 'block';
+      if (bannerDetail) {
+        bannerDetail.textContent = `This browser has a backup from ${new Date(cached.savedAt).toLocaleString()} with ${cachedCount} account(s) (customers, businesses & riders). Restore it so nobody has to sign up again.`;
+      }
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+}
+
+/** One-click recovery using the backup this browser already cached. */
+async function restoreFromLocalCache() {
+  const cached = loadLocalBackupCache();
+  if (!cached || !cached.data) {
+    showToast('No local backup found in this browser');
+    return;
+  }
+  const res = await api('/api/admin/restore', { method: 'POST', body: JSON.stringify(cached.data) });
+  if (res && res.success) {
+    showToast(`Restored ${res.counts.users} accounts, ${res.counts.riders} riders`);
+    document.getElementById('mgr-restore-banner').style.display = 'none';
+    await refreshManagerFromServer();
+    await refreshMgrRiders();
+    renderManager();
+  } else {
+    showToast((res && res.error) || 'Restore failed');
+  }
+}
+
+/** Download the full current dataset as a JSON file the manager can keep offline. */
+async function downloadManagerBackup() {
+  if (typeof api !== 'function') return;
+  const backup = await api('/api/admin/backup');
+  if (!backup || backup.success === false) {
+    showToast('Could not fetch backup from server');
+    return;
+  }
+  saveLocalBackupCache(backup);
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'gift-shop-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast('Backup downloaded — keep it somewhere safe before redeploying');
+}
+
+/** Restore from a manually-selected backup JSON file (e.g. downloaded earlier, or from another browser). */
+function restoreFromBackupFile(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    let payload;
+    try { payload = JSON.parse(e.target.result); } catch (_) {
+      showToast('That file is not valid backup JSON');
+      return;
+    }
+    const res = await api('/api/admin/restore', { method: 'POST', body: JSON.stringify(payload) });
+    if (res && res.success) {
+      showToast(`Restored ${res.counts.users} accounts, ${res.counts.riders} riders`);
+      document.getElementById('mgr-restore-banner').style.display = 'none';
+      await refreshManagerFromServer();
+      await refreshMgrRiders();
+      renderManager();
+    } else {
+      showToast((res && res.error) || 'Restore failed');
+    }
+  };
+  reader.readAsText(file);
+  event.target.value = '';
+}
 
 // ===== Password visibility & reset =====
 function togglePasswordVisible(inputId, btnId) {
@@ -3854,6 +4123,33 @@ function stopRiderJobsPolling() {
   }
 }
 
+// Manager portal — keep the riders/businesses/customers panels live without
+// requiring the separate "auto-refresh" toggle. Runs on its own always-on
+// timer while the manager is signed in, same pattern as rider job polling.
+let managerPollTimer = null;
+async function refreshManagerPanels() {
+  if (!currentUser || currentUser.role !== 'manager') return;
+  try {
+    if (typeof refreshManagerFromServer === 'function') await refreshManagerFromServer();
+    if (typeof refreshMgrRiders === 'function') await refreshMgrRiders();
+    if (typeof autoBackupToLocalCache === 'function') await autoBackupToLocalCache();
+    if (typeof renderManager === 'function') renderManager();
+  } catch (e) {
+    console.warn('refreshManagerPanels', e);
+  }
+}
+function startManagerPolling() {
+  stopManagerPolling();
+  refreshManagerPanels();
+  managerPollTimer = setInterval(refreshManagerPanels, 8000);
+}
+function stopManagerPolling() {
+  if (managerPollTimer) {
+    clearInterval(managerPollTimer);
+    managerPollTimer = null;
+  }
+}
+
 async function runAutoRefresh() {
   if (!autoRefreshOn) return;
   const role = currentUser && currentUser.role;
@@ -4015,14 +4311,27 @@ async function markOrderPickedUp(orderId) {
 function restoreSessionSafely() {
   try {
     const raw = localStorage.getItem('tgs_user');
-    if (!raw) return;
+    if (!raw) return null;
     const user = JSON.parse(raw);
-    if (!user || !user.role) return;
+    if (!user || !user.role) return null;
     // Manager is hardcoded — only restore non-manager sessions from storage
-    if (user.role === 'manager') return;
+    if (user.role === 'manager') return null;
     currentUser = user;
-  } catch (_) {}
+    return user;
+  } catch (_) { return null; }
 }
+
+// So customers, businesses and riders stay signed in across page reloads /
+// app updates instead of having to sign in (let alone sign up) again every
+// time — a saved session just re-enters the app; the usual per-screen
+// refresh calls then reconcile with the server in the background. Deferred
+// to DOMContentLoaded so every function/const above is fully defined first.
+document.addEventListener('DOMContentLoaded', () => {
+  const restored = typeof restoreSessionSafely === 'function' ? restoreSessionSafely() : null;
+  if (restored && typeof enterApp === 'function' && !document.querySelector('.screen.active:not(#role-selector)')) {
+    enterApp(restored.role);
+  }
+});
 
 // Prefer server account when signing in (already default). Local list is offline backup only.
 

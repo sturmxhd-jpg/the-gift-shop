@@ -166,6 +166,29 @@ function riderJobCap(rider) {
 function riderActiveJobCount(riderId) {
   return orders.filter(o => o.rider && o.rider.id === riderId && o.status !== 'delivered').length;
 }
+
+// Customer-purchased ads: GYD 1,000/day, 3-day minimum, or a flat GYD 5,000
+// 7-day package. Paid in full (MMG transaction code) before the ad goes live.
+const CUSTOMER_AD_MIN_DAYS = 3;
+const CUSTOMER_AD_DAILY_RATE_GYD = 1000;
+const CUSTOMER_AD_WEEK_DAYS = 7;
+const CUSTOMER_AD_WEEK_RATE_GYD = 5000;
+function customerAdCost(days) {
+  const d = Math.max(CUSTOMER_AD_MIN_DAYS, Math.floor(Number(days) || 0));
+  return d === CUSTOMER_AD_WEEK_DAYS ? CUSTOMER_AD_WEEK_RATE_GYD : d * CUSTOMER_AD_DAILY_RATE_GYD;
+}
+/** Flip any ad whose paid placement window has passed from Active to Expired so listings stay accurate. */
+function sweepExpiredAds() {
+  let changed = false;
+  const now = Date.now();
+  platformAds.forEach(a => {
+    if (a.status === 'Active' && a.expiresAt && new Date(a.expiresAt).getTime() <= now) {
+      a.status = 'Expired';
+      changed = true;
+    }
+  });
+  if (changed) persistAds();
+}
 /** The single best rider to offer a job at (lat,lng) to right now: online, under their cap, hasn't declined this job, closest first. Returns null if nobody qualifies. */
 function closestEligibleRider(lat, lng, excludeRiderIds) {
   const excluded = excludeRiderIds ? new Set(excludeRiderIds) : null;
@@ -1098,7 +1121,46 @@ async function handleAPI(req, res, pathname, query) {
   // there's no session/auth-token system in this prototype for the server to
   // check who's calling, same as the rest of this app's endpoints.
   if (pathname === '/api/ads' && method === 'GET') {
+    sweepExpiredAds();
     return sendJSON(res, 200, { ads: platformAds });
+  }
+  // Customer-purchased ad placement — paid in full (MMG) before it goes live.
+  // GYD 1,000/day, 3-day minimum, or GYD 5,000 flat for the 7-day package.
+  if (pathname === '/api/ads/customer' && method === 'POST') {
+    try {
+      const body = await readBody(req);
+      if (!body.headline) return sendJSON(res, 400, { error: 'headline required' });
+      if (!body.txid || !body.mmgPhone) {
+        return sendJSON(res, 400, { error: 'mmgPhone and txid required — pay via MMG 61214940 first' });
+      }
+      const days = Math.max(CUSTOMER_AD_MIN_DAYS, Math.floor(Number(body.days) || CUSTOMER_AD_MIN_DAYS));
+      const amount = customerAdCost(days);
+      const now = new Date();
+      const expires = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+      const ad = {
+        id: 'CAD' + uuid(),
+        headline: body.headline,
+        sub: body.sub || '',
+        place: body.place || 'all',
+        status: 'Active',
+        source: 'customer',
+        customerId: body.customerId || null,
+        customerName: body.customerName || 'Customer',
+        days,
+        amount,
+        mmgPhone: body.mmgPhone,
+        txid: body.txid,
+        startsAt: now.toISOString(),
+        expiresAt: expires.toISOString(),
+        createdAt: now.toISOString()
+      };
+      platformAds.unshift(ad);
+      persistAds();
+      // In production: verify the transaction with the MMG merchant API first.
+      return sendJSON(res, 201, { success: true, ad, amount, days });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid JSON' });
+    }
   }
   if (pathname === '/api/ads' && method === 'POST') {
     try {
