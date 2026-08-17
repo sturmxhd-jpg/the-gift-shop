@@ -702,6 +702,9 @@ function enterApp(role) {
     if (typeof renderBusiness === "function") renderBusiness();
     if (typeof updateBizLogoPreview === "function") updateBizLogoPreview();
     updateHeaderUser();
+    // Real weekly sales / order count / plan status for THIS business only —
+    // pulled fresh on every login so it's right even on a brand-new device.
+    if (typeof refreshBusinessDashboardFromServer === "function") refreshBusinessDashboardFromServer();
   } else if (role === "delivery") {
     document.getElementById("delivery-app").classList.add("active");
     if (typeof syncRidersFromUsers === "function") syncRidersFromUsers();
@@ -1109,13 +1112,13 @@ function canPostDeal() {
     }
     return { ok: true };
   }
-  // Free: one free item listing per month. Once that free item is sold, must subscribe.
+  // Free: one free listing on signup. Any additional listing needs the paid plan.
   if (s.plan === 'trial') {
     if (s.freeItemSold) {
-      return { ok: false, reason: 'Your free item was sold. Subscribe GYD 5,000/mo via MMG to 61214940 for 30 days uninterrupted service.' };
+      return { ok: false, reason: 'Your free listing is already in use. Subscribe GYD 5,000/mo via MMG to 61214940 for up to 10 listings.' };
     }
     if ((s.dealsPosted || 0) >= FREE_MAX_DEALS) {
-      return { ok: false, reason: 'Free plan: 1 item listing. Subscribe via MMG to 61214940 for more deals and 30 days full access.' };
+      return { ok: false, reason: 'Free plan: 1 listing. Subscribe via MMG to 61214940 for up to 10 listings.' };
     }
     return { ok: true };
   }
@@ -1136,6 +1139,29 @@ function markFreeItemSoldIfNeeded() {
 function canAccessFullPortal() {
   const s = refreshSubscriptionStatus();
   return s.plan === 'trial' || s.plan === 'paid';
+}
+
+/** Pull real, server-side, per-business numbers (weekly sales, order count,
+ * net payout, listings used) into the dashboard — and sync the free/paid
+ * plan status too, so it's correct on any device, not just the one that
+ * originally posted the listing or paid the subscription. */
+async function refreshBusinessDashboardFromServer() {
+  if (!currentUser || currentUser.role !== 'business' || typeof api !== 'function') return;
+  const res = await api('/api/business/dashboard?businessId=' + encodeURIComponent(currentUser.id));
+  if (!res || res.error) return;
+
+  bizSubscription.plan = res.plan === 'paid' ? 'paid' : 'trial';
+  bizSubscription.paidUntil = res.paidUntil || bizSubscription.paidUntil;
+  bizSubscription.dealsPosted = res.listingsUsed || 0;
+  bizSubscription.freeItemSold = res.plan !== 'paid' && (res.listingsUsed || 0) >= (res.listingLimit || FREE_MAX_DEALS);
+  saveSubscription(bizSubscription);
+
+  const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setTxt('biz-active-deals-count', String(res.activeDeals || 0));
+  setTxt('biz-order-count', String(res.orders || 0));
+  setTxt('biz-week-sales', 'GYD ' + (res.weekSales || 0).toLocaleString());
+  setTxt('biz-net-payout', 'GYD ' + (res.netPayout || 0).toLocaleString());
+  if (typeof updateSubscriptionUI === 'function') updateSubscriptionUI();
 }
 
 function updateSubscriptionUI() {
@@ -1163,15 +1189,15 @@ function updateSubscriptionUI() {
       (s.lastPaymentRef ? ' · Ref ' + s.lastPaymentRef : '');
     if (payBtn) payBtn.style.display = 'none';
   } else if (s.plan === 'trial') {
-    if (badge) { badge.textContent = 'Free Trial'; badge.classList.add('trial'); }
-    if (label) label.textContent = 'Free trial';
-    if (title) title.textContent = '1 deal · 30 days full access';
+    if (badge) { badge.textContent = 'Free listing'; badge.classList.add('trial'); }
+    if (label) label.textContent = 'Free plan';
+    if (title) title.textContent = '1 free listing · Full portal access';
     if (desc) desc.innerHTML =
-      'Free: <strong>1 item listing</strong> per month. Once that item is <strong>sold</strong>, subscribe ' +
-      '(GYD 5,000 via MMG to <strong>61214940</strong>) for <strong>30 days</strong> uninterrupted service (up to 10 deals).';
+      'Every business gets <strong>1 free listing</strong> on signup. For a 2nd listing (and up to 10), subscribe ' +
+      '(GYD 5,000/mo via MMG to <strong>61214940</strong>).';
     if (meta) meta.textContent =
-      (s.freeItemSold ? 'Free item sold — subscribe to continue · ' : '') +
-      'Deals listed: ' + (s.dealsPosted || 0) + ' / ' + FREE_MAX_DEALS;
+      (s.freeItemSold ? 'Free listing used — subscribe to add more · ' : '') +
+      'Listings used: ' + (s.dealsPosted || 0) + ' / ' + FREE_MAX_DEALS;
     if (payBtn) {
       payBtn.style.display = 'block';
       payBtn.textContent = s.freeItemSold ? 'Subscribe — Pay GYD 5,000 via MMG' : 'Upgrade early — Pay GYD 5,000 via MMG';
@@ -1219,11 +1245,14 @@ async function confirmSubscriptionPayment() {
   bizSubscription.amount = SUB_FEE_GYD;
   saveSubscription(bizSubscription);
 
-  // Notify backend if available
+  // Notify backend if available — businessId is what actually lifts the
+  // free-listing cap server-side (previously this call logged the payment
+  // but never reached the account, so the limit never really lifted).
   if (typeof api === 'function') {
     await api('/api/business/subscribe', {
       method: 'POST',
       body: JSON.stringify({
+        businessId: currentUser && currentUser.id,
         mmgPhone: phone,
         txid,
         amount: SUB_FEE_GYD,
@@ -1256,6 +1285,7 @@ async function confirmSubscriptionPayment() {
     }
   }
   showToast('Subscription activated for 30 days! ✅');
+  if (typeof refreshBusinessDashboardFromServer === 'function') refreshBusinessDashboardFromServer();
 }
 
 
@@ -1445,7 +1475,9 @@ async function submitNewDeal(e) {
       if (typeof api === 'function' && cd) {
         // Send the real photo (server saves it to disk and returns a /data/... URL)
         // instead of only keeping it in this browser's local storage.
-        api('/api/deals', { method: 'POST', body: JSON.stringify({ ...cd, photo: cd.photo || null }) });
+        // businessId lets the server attribute this listing (and any orders
+        // against it) to the real account, and enforce the free-listing cap.
+        api('/api/deals', { method: 'POST', body: JSON.stringify({ ...cd, photo: cd.photo || null, businessId: currentUser && currentUser.id }) });
       }
     }
     closeModal();
@@ -1508,11 +1540,27 @@ async function submitNewDeal(e) {
 
   if (typeof api === 'function') {
     // Send the real photo (server saves it to disk and returns a /data/... URL)
-    // instead of only keeping it in this browser's local storage.
-    await api('/api/deals', {
+    // instead of only keeping it in this browser's local storage. businessId
+    // lets the server enforce the free-listing cap for real, not just here.
+    const res = await api('/api/deals', {
       method: 'POST',
-      body: JSON.stringify({ ...customerDeal, photo: photo || null })
+      body: JSON.stringify({ ...customerDeal, photo: photo || null, businessId: currentUser && currentUser.id })
     });
+    if (res && res.error && !res.offline) {
+      // Server said no (e.g. the free listing was already used on another
+      // device) — undo the optimistic local changes so state stays honest.
+      businessDeals = businessDeals.filter(d => d.id !== bizId);
+      if (typeof deals !== 'undefined') deals = deals.filter(d => d.id !== newId);
+      bizSubscription.dealsPosted = Math.max(0, (bizSubscription.dealsPosted || 1) - 1);
+      saveSubscription(bizSubscription);
+      if (typeof saveLiveDeals === 'function') saveLiveDeals();
+      if (typeof saveBusinessDeals === 'function') saveBusinessDeals();
+      showToast(res.error);
+      closeModal();
+      renderBusiness();
+      openSubscriptionPay();
+      return false;
+    }
   }
   // Force customer feed to pick up the change even if already open
   if (typeof refreshDealsFromServer === 'function') {
@@ -1533,6 +1581,7 @@ async function submitNewDeal(e) {
   }
   const adc = document.getElementById('biz-active-deals-count');
   if (adc) adc.textContent = String(businessDeals.filter(d => d.status === 'Active').length);
+  if (typeof refreshBusinessDashboardFromServer === 'function') refreshBusinessDashboardFromServer();
 
   showToast('Deal published to customers: ' + title + ' 🎉');
   return false;
@@ -3765,10 +3814,18 @@ async function refreshManagerFromServer() {
     if (res && Array.isArray(res.users)) {
       // Merge server users into adminUsers (server is source of truth for sign-ups)
       res.users.forEach(su => {
+        // Match on identity AND role — the same email can hold separate
+        // customer/business/delivery accounts (one email, multiple roles is
+        // an explicitly supported signup flow), so two different-role
+        // accounts sharing an email must stay as two directory entries, not
+        // collapse into one and silently drop a business/rider/customer
+        // from the manager's counts.
         const exists = adminUsers.find(u =>
-          (u.email && su.email && u.email.toLowerCase() === su.email.toLowerCase()) ||
-          (u.identifier && su.identifier && u.identifier === su.identifier) ||
-          (u.id && su.id && u.id === su.id)
+          u.role === su.role && (
+            (u.id && su.id && u.id === su.id) ||
+            (u.email && su.email && u.email.toLowerCase() === su.email.toLowerCase()) ||
+            (u.identifier && su.identifier && u.identifier === su.identifier)
+          )
         );
         if (!exists) {
           adminUsers.push({
@@ -4176,6 +4233,12 @@ async function refreshManagerPanels() {
   try {
     if (typeof refreshManagerFromServer === 'function') await refreshManagerFromServer();
     if (typeof refreshMgrRiders === 'function') await refreshMgrRiders();
+    // The manager portal must show real live deal counts on its own —
+    // it can't depend on a customer session having loaded `deals` first
+    // in this browser tab (a manager logging straight into the portal on
+    // a fresh browser previously saw "0 deals" even with real live deals
+    // on the server).
+    if (typeof refreshDealsFromServer === 'function') await refreshDealsFromServer();
     if (typeof autoBackupToLocalCache === 'function') await autoBackupToLocalCache();
     if (typeof renderManager === 'function') renderManager();
   } catch (e) {

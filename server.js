@@ -19,6 +19,37 @@ function uuid() {
   return crypto.randomBytes(4).toString('hex').toUpperCase();
 }
 
+// ─── Password hashing (scrypt, Node built-in — no extra dependency) ────────
+// Stored format: "scrypt$<saltHex>$<hashHex>". Accounts created before this
+// was added still have their old plain-text password string — verifyPassword
+// falls back to a direct compare for those and the caller re-hashes on a
+// successful legacy login, so nobody is locked out by this change.
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `scrypt$${salt}$${hash}`;
+}
+function isHashedPassword(stored) {
+  return typeof stored === 'string' && stored.startsWith('scrypt$');
+}
+function verifyPassword(password, stored) {
+  if (!stored) return false;
+  if (isHashedPassword(stored)) {
+    const parts = stored.split('$');
+    if (parts.length !== 3) return false;
+    const [, salt, hashHex] = parts;
+    try {
+      const hashBuf = Buffer.from(hashHex, 'hex');
+      const testBuf = crypto.scryptSync(String(password), salt, 64);
+      return hashBuf.length === testBuf.length && crypto.timingSafeEqual(hashBuf, testBuf);
+    } catch (e) {
+      return false;
+    }
+  }
+  // Legacy plain-text account — direct compare (migrated to a hash by the caller on success)
+  return stored === password;
+}
+
 // ─── Data store ────────────────────────────────────────────────────────────
 let deals = [];
 
@@ -169,6 +200,24 @@ function riderJobCap(rider) {
 }
 function riderActiveJobCount(riderId) {
   return orders.filter(o => o.rider && o.rider.id === riderId && o.status !== 'delivered').length;
+}
+
+// ─── Business plan / listing limits ────────────────────────────────────────
+// Every business gets ONE free listing on signup. A 2nd (or further) listing
+// requires an active paid monthly subscription (GYD 5,000/mo via MMG,
+// enforced here — not just in the UI — so it can't be bypassed by clearing
+// local storage or signing in on a different device).
+const FREE_LISTING_LIMIT = 1;
+const PAID_LISTING_LIMIT = 10;
+const BUSINESS_SUB_FEE_GYD = 5000;
+function businessIsPaid(business) {
+  return !!(business && business.plan === 'paid' && business.paidUntil && new Date(business.paidUntil).getTime() > Date.now());
+}
+function businessDealCount(businessId) {
+  return deals.filter(d => d.businessId === businessId).length;
+}
+function businessListingLimit(business) {
+  return businessIsPaid(business) ? PAID_LISTING_LIMIT : FREE_LISTING_LIMIT;
 }
 
 // Customer-purchased ads: GYD 1,000/day, 3-day minimum, or a flat GYD 5,000
@@ -409,13 +458,43 @@ async function handleAPI(req, res, pathname, query) {
       }
       const id = body.id || (deals.length ? Math.max(...deals.map(d => Number(d.id) || 0)) + 1 : Date.now());
       const existing = deals.find(d => String(d.id) === String(id));
+
+      // Resolve the real business account (if one was supplied) so listing
+      // ownership and the free-listing limit are enforced server-side, not
+      // just in the UI — a business can't get more free listings just by
+      // clearing local storage or switching devices.
+      let business = null;
+      if (body.businessId) {
+        business = users.find(u => u.id === body.businessId && u.role === 'business');
+        if (!business) return sendJSON(res, 400, { error: 'Business account not found' });
+      }
+
+      if (!existing) {
+        // New listing — enforce the free-plan limit for real business accounts.
+        if (business) {
+          const limit = businessListingLimit(business);
+          const count = businessDealCount(business.id);
+          if (count >= limit) {
+            return sendJSON(res, 402, {
+              error: businessIsPaid(business)
+                ? `Paid plan allows up to ${PAID_LISTING_LIMIT} listings. Limit reached.`
+                : `Your free listing is already in use. Subscribe (GYD ${BUSINESS_SUB_FEE_GYD.toLocaleString()}/mo via MMG 61214940) for up to ${PAID_LISTING_LIMIT} listings.`
+            });
+          }
+        }
+      } else if (business && existing.businessId && existing.businessId !== business.id) {
+        return sendJSON(res, 403, { error: 'This listing belongs to a different business account' });
+      }
+
       let photo = (existing && existing.photo) || null;
       if (body.photo && body.photo !== '[image]') {
         try { photo = saveDealPhoto(id, body.photo); } catch (e) { console.warn('saveDealPhoto failed', e.message); }
       }
       const deal = {
         id,
-        business: body.business || (existing && existing.business) || 'Local Business',
+        businessId: business ? business.id : ((existing && existing.businessId) || null),
+        // Trust the real account's business name over a client-supplied string once we have one.
+        business: (business && business.businessName) || body.business || (existing && existing.business) || 'Local Business',
         title: body.title,
         price: Number(body.price),
         original: Number(body.original) || Number(body.price),
@@ -469,9 +548,21 @@ async function handleAPI(req, res, pathname, query) {
         ? closestEligibleRider(typeof pickupLat === 'number' ? pickupLat : 6.812, typeof pickupLng === 'number' ? pickupLng : -58.155)
         : null;
       const rider = best ? best.r : null;
+      // Tag each item with the business that listed it (looked up from the
+      // live deals catalogue by item id) so orders/revenue can be scoped to
+      // the correct business later — the client only sends title/price/qty,
+      // it doesn't need to know or claim a business id itself.
+      const taggedItems = items.map(item => {
+        const deal = deals.find(d => String(d.id) === String(item.id));
+        return {
+          ...item,
+          businessId: deal ? deal.businessId || null : null,
+          business: deal ? deal.business : null
+        };
+      });
       const order = {
         id: 'ORD-' + uuid(),
-        items,
+        items: taggedItems,
         fulfillment: fulfillment || 'pickup',
         paymentMethod: paymentMethod || 'cod',
         deliveryAddress: deliveryAddress || null,
@@ -780,9 +871,44 @@ async function handleAPI(req, res, pathname, query) {
     return sendJSON(res, 200, ratings);
   }
 
-  // Business
+  // Business — real per-business aggregation, scoped by businessId (preferred)
+  // or business name (legacy fallback). Previously this returned a hardcoded
+  // all-zero placeholder and 5 orders from EVERY business mixed together —
+  // any two businesses would have seen each other's orders/revenue here.
   if (pathname === '/api/business/dashboard' && method === 'GET') {
-    return sendJSON(res, 200, { ...businessStats, recentOrders: orders.slice(0, 5) });
+    let business = null;
+    if (query.businessId) business = users.find(u => u.id === query.businessId && u.role === 'business');
+    else if (query.business) business = users.find(u => u.role === 'business' && u.businessName === query.business);
+    if (!business) {
+      return sendJSON(res, 200, { ...businessStats, recentOrders: [] });
+    }
+    const myDeals = deals.filter(d => d.businessId === business.id);
+    const activeDeals = myDeals.filter(d => !d._paused).length;
+    const myOrders = orders.filter(o => Array.isArray(o.items) && o.items.some(i => i.businessId === business.id));
+    const now = Date.now();
+    const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+    const myItemTotal = o => o.items
+      .filter(i => i.businessId === business.id)
+      .reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.qty) || 0), 0);
+    const weekSales = myOrders
+      .filter(o => now - new Date(o.createdAt).getTime() <= WEEK_MS)
+      .reduce((sum, o) => sum + myItemTotal(o), 0);
+    const netPayout = Math.round(weekSales * 0.93); // 7% platform commission — matches the settlement panel copy
+    const recentOrders = myOrders.slice(0, 5).map(o => ({
+      id: o.id, status: o.status, total: myItemTotal(o), createdAt: o.createdAt
+    }));
+    return sendJSON(res, 200, {
+      name: business.businessName || '',
+      plan: businessIsPaid(business) ? 'paid' : 'free',
+      paidUntil: business.paidUntil || null,
+      weekSales,
+      orders: myOrders.length,
+      activeDeals,
+      netPayout,
+      listingsUsed: myDeals.length,
+      listingLimit: businessListingLimit(business),
+      recentOrders
+    });
   }
 
 
@@ -833,7 +959,7 @@ async function handleAPI(req, res, pathname, query) {
       }
       const user = users.find(u => u.email && u.email.toLowerCase() === email);
       if (!user) return sendJSON(res, 404, { error: 'Account not found' });
-      user.password = password;
+      user.password = hashPassword(password);
       persistUsers();
       passwordResetTokens.delete(email);
       await sendEmail({
@@ -874,9 +1000,9 @@ async function handleAPI(req, res, pathname, query) {
       );
       let user = null;
       if (body.role) {
-        user = candidates.find(u => u.role === body.role && u.password === password);
+        user = candidates.find(u => u.role === body.role && verifyPassword(password, u.password));
         if (!user && candidates.length) {
-          const wrongRole = candidates.find(u => u.password === password);
+          const wrongRole = candidates.find(u => verifyPassword(password, u.password));
           if (wrongRole) {
             return sendJSON(res, 403, {
               error: 'This email is registered as ' + wrongRole.role +
@@ -885,13 +1011,20 @@ async function handleAPI(req, res, pathname, query) {
           }
         }
       } else {
-        user = candidates.find(u => u.password === password);
+        user = candidates.find(u => verifyPassword(password, u.password));
       }
       if (!user) {
         return sendJSON(res, 401, { error: 'Invalid email/phone or password' });
       }
       if (user.role === 'manager') {
         return sendJSON(res, 403, { error: 'Access denied' });
+      }
+      // Legacy accounts created before password hashing was added still have
+      // a plain-text password on file — upgrade it silently now that we know
+      // it's correct, so it's hashed at rest from this point on.
+      if (!isHashedPassword(user.password)) {
+        user.password = hashPassword(password);
+        persistUsers();
       }
       return sendJSON(res, 200, { success: true, user: publicUser(user) });
     } catch (e) {
@@ -936,7 +1069,7 @@ async function handleAPI(req, res, pathname, query) {
       const user = {
         id: 'U' + uuid(),
         identifier: email,
-        password,
+        password: hashPassword(password),
         name,
         role,
         phone: phone || '',
@@ -944,6 +1077,10 @@ async function handleAPI(req, res, pathname, query) {
         businessName: body.businessName || null,
         address: body.address || null,
         riderId: role === 'delivery' ? 'R' + uuid().slice(0, 4) : null,
+        // Businesses start on the free plan — 1 free listing, more require
+        // the paid monthly plan (see FREE_LISTING_LIMIT / businessIsPaid).
+        plan: role === 'business' ? 'free' : null,
+        paidUntil: null,
         createdAt: new Date().toISOString()
       };
       users.push(user);
@@ -1105,7 +1242,7 @@ async function handleAPI(req, res, pathname, query) {
       const paidUntil = new Date();
       paidUntil.setDate(paidUntil.getDate() + 30);
       const record = {
-        amount: body.amount || 5000,
+        amount: body.amount || BUSINESS_SUB_FEE_GYD,
         mmgTo: body.mmgTo || '61214940',
         mmgPhone: body.mmgPhone,
         txid: body.txid,
@@ -1113,8 +1250,24 @@ async function handleAPI(req, res, pathname, query) {
         paidUntil: paidUntil.toISOString(),
         createdAt: new Date().toISOString()
       };
-      // In production: verify with MMG API, attach to business account
-      return sendJSON(res, 201, { success: true, subscription: record, plan: 'paid' });
+      // In production: verify with MMG API first. Attach the paid plan to
+      // the real business account so the free-listing limit actually lifts
+      // (previously this was a no-op — the payment was logged but never
+      // reached the account, so the free-listing gate never lifted).
+      let business = null;
+      if (body.businessId) {
+        business = users.find(u => u.id === body.businessId && u.role === 'business');
+        if (business) {
+          business.plan = 'paid';
+          business.paidUntil = record.paidUntil;
+          persistUsers();
+        }
+      }
+      return sendJSON(res, 201, {
+        success: true, subscription: record, plan: 'paid',
+        attached: !!business,
+        listingLimit: business ? businessListingLimit(business) : PAID_LISTING_LIMIT
+      });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Invalid JSON' });
     }
@@ -1259,14 +1412,17 @@ if (pathname === '/api/admin/users' && method === 'GET') {
       const user = {
         id: 'U' + uuid(),
         identifier: body.identifier,
-        password: body.password || 'giftshop',
+        password: hashPassword(body.password || 'giftshop'),
         name: body.name,
         role: body.role,
         phone: body.phone || (body.identifier.includes('@') ? '' : body.identifier),
         email: body.email || (body.identifier.includes('@') ? body.identifier : ''),
-        businessName: body.businessName || null
+        businessName: body.businessName || null,
+        plan: body.role === 'business' ? 'free' : null,
+        paidUntil: null
       };
       users.push(user);
+      persistUsers();
       return sendJSON(res, 201, { success: true, user: publicUser(user) });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Invalid JSON' });
