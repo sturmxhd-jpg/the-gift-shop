@@ -2829,8 +2829,17 @@ function renderAdIntoBanner(banner, content, sponsored) {
   if (!banner || !content) return;
   const strongEl = banner.querySelector('.ad-body strong');
   const spanEl = banner.querySelector('.ad-body span');
+  const photoEl = banner.querySelector('.ad-photo');
   if (strongEl) strongEl.textContent = content.headline;
   if (spanEl) spanEl.textContent = content.sub;
+  if (photoEl) {
+    if (content.photo) {
+      photoEl.src = content.photo;
+      photoEl.style.display = '';
+    } else {
+      photoEl.style.display = 'none';
+    }
+  }
   banner.style.display = ''; // always visible — placeholder or real ad
   banner.classList.toggle('sponsored', !!sponsored);
 }
@@ -3112,6 +3121,7 @@ function renderManager() {
   applyPlatformAds();
 }
 
+let mgrAdPhotoData = null;
 function openMgrAdForm(id) {
   const ad = id ? platformAds.find(a => a.id === id) : null;
   document.getElementById('mgr-ad-id').value = ad ? ad.id : '';
@@ -3121,7 +3131,33 @@ function openMgrAdForm(id) {
   document.getElementById('mgr-ad-sub').value = ad ? ad.sub : '';
   document.getElementById('mgr-ad-place').value = ad ? ad.place : 'all';
   document.getElementById('mgr-ad-status').value = ad ? ad.status : 'Active';
+  mgrAdPhotoData = (ad && ad.photo) || null;
+  updateMgrAdPhotoPreview();
   document.getElementById('mgr-ad-modal')?.classList.add('active');
+}
+
+function updateMgrAdPhotoPreview() {
+  const preview = document.getElementById('mgr-ad-photo-preview');
+  if (!preview) return;
+  preview.innerHTML = mgrAdPhotoData
+    ? `<img src="${mgrAdPhotoData}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:14px">`
+    : '🖼️';
+}
+function handleMgrAdPhoto(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    mgrAdPhotoData = e.target.result;
+    updateMgrAdPhotoPreview();
+  };
+  reader.readAsDataURL(file);
+}
+function clearMgrAdPhoto() {
+  mgrAdPhotoData = null;
+  const input = document.getElementById('mgr-ad-photo-input');
+  if (input) input.value = '';
+  updateMgrAdPhotoPreview();
 }
 
 /** Manager-only free platform ads are persisted server-side (GET/POST/DELETE
@@ -3166,13 +3202,14 @@ async function saveMgrAd(e) {
   const place = document.getElementById('mgr-ad-place').value;
   const status = document.getElementById('mgr-ad-status').value;
   if (!headline) { showToast('Headline required'); return false; }
-  const payload = { id: id || undefined, headline, sub, place, status };
+  const photo = mgrAdPhotoData || null;
+  const payload = { id: id || undefined, headline, sub, place, status, photo };
   if (id) {
     const ad = platformAds.find(a => a.id === id);
-    if (ad) { ad.headline = headline; ad.sub = sub; ad.place = place; ad.status = status; }
+    if (ad) { ad.headline = headline; ad.sub = sub; ad.place = place; ad.status = status; ad.photo = photo; }
     showToast('Ad updated');
   } else {
-    platformAds.unshift({ id: 'AD' + Date.now().toString(36).toUpperCase(), headline, sub, place, status });
+    platformAds.unshift({ id: 'AD' + Date.now().toString(36).toUpperCase(), headline, sub, place, status, photo });
     showToast('Ad created');
   }
   persistAdminData();
@@ -3180,7 +3217,14 @@ async function saveMgrAd(e) {
   renderManager();
   applyPlatformAds();
   if (typeof api === 'function') {
-    try { await api('/api/ads', { method: 'POST', body: JSON.stringify(payload) }); } catch (_) {}
+    const res = await api('/api/ads', { method: 'POST', body: JSON.stringify(payload) }).catch(() => null);
+    // Server saves any data: URL to disk and returns a stable /data/... path —
+    // sync that back so the local cache doesn't keep resending the full image.
+    if (res && res.success && res.ad) {
+      const idx = platformAds.findIndex(a => a.id === res.ad.id);
+      if (idx !== -1) platformAds[idx] = res.ad;
+      applyPlatformAds();
+    }
   }
   return false;
 }
@@ -4138,6 +4182,20 @@ async function refreshManagerPanels() {
     console.warn('refreshManagerPanels', e);
   }
 }
+/** Manual "🔄 Refresh now" button — same data pull as the background poller, but
+ * immediate and with visible feedback, so a manager isn't left guessing whether
+ * the businesses/riders/customers lists reflect real sign-ups right now. */
+async function manualRefreshManager() {
+  const statusEl = document.getElementById('mgr-live-status');
+  if (statusEl) statusEl.textContent = 'Refreshing…';
+  await refreshManagerPanels();
+  const bizCount = adminUsers.filter(u => u.role === 'business').length;
+  const riderCount = adminUsers.filter(u => u.role === 'delivery').length;
+  const custCount = adminUsers.filter(u => u.role === 'customer').length;
+  if (statusEl) statusEl.textContent = 'Last refreshed ' + new Date().toLocaleTimeString();
+  showToast(`Refreshed — ${bizCount} business(es), ${riderCount} rider(s), ${custCount} customer(s)`);
+}
+
 function startManagerPolling() {
   stopManagerPolling();
   refreshManagerPanels();

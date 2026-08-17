@@ -58,9 +58,10 @@ const META_FILE = path.join(DATA_DIR, 'meta.json');
 const OUTBOX_DIR = path.join(DATA_DIR, 'outbox');
 const DEAL_PHOTOS_DIR = path.join(DATA_DIR, 'deal-photos');
 const RIDER_PHOTOS_DIR = path.join(DATA_DIR, 'rider-photos');
+const AD_PHOTOS_DIR = path.join(DATA_DIR, 'ad-photos');
 
 function ensureDataDirs() {
-  [DATA_DIR, OUTBOX_DIR, path.join(DATA_DIR, 'proofs'), DEAL_PHOTOS_DIR, RIDER_PHOTOS_DIR].forEach(d => {
+  [DATA_DIR, OUTBOX_DIR, path.join(DATA_DIR, 'proofs'), DEAL_PHOTOS_DIR, RIDER_PHOTOS_DIR, AD_PHOTOS_DIR].forEach(d => {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
   });
 }
@@ -136,6 +137,9 @@ function saveDealPhoto(id, photoInput) {
 }
 function saveRiderPhoto(id, photoInput) {
   return savePhoto(RIDER_PHOTOS_DIR, 'rider-photos', 'RIDER', id, photoInput);
+}
+function saveAdPhoto(id, photoInput) {
+  return savePhoto(AD_PHOTOS_DIR, 'ad-photos', 'AD', id, photoInput);
 }
 
 // ─── Geo / dispatch helpers ────────────────────────────────────────────────
@@ -1137,8 +1141,9 @@ async function handleAPI(req, res, pathname, query) {
       const amount = customerAdCost(days);
       const now = new Date();
       const expires = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+      const adId = 'CAD' + uuid();
       const ad = {
-        id: 'CAD' + uuid(),
+        id: adId,
         headline: body.headline,
         sub: body.sub || '',
         place: body.place || 'all',
@@ -1148,6 +1153,7 @@ async function handleAPI(req, res, pathname, query) {
         customerName: body.customerName || 'Customer',
         days,
         amount,
+        photo: saveAdPhoto(adId, body.photo),
         mmgPhone: body.mmgPhone,
         txid: body.txid,
         startsAt: now.toISOString(),
@@ -1173,7 +1179,8 @@ async function handleAPI(req, res, pathname, query) {
         headline: body.headline,
         sub: body.sub || '',
         place: body.place || 'all', // login | customer | business | rider | all | (legacy) both
-        status: body.status || 'Active'
+        status: body.status || 'Active',
+        photo: saveAdPhoto(id, body.photo)
       };
       if (existing) Object.assign(existing, ad); else platformAds.unshift(ad);
       persistAds();

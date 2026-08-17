@@ -63,6 +63,7 @@
       <!-- Ad banner (login only) -->
       <div class="ad-banner" onclick="showToast('Advertise on The Gift Shop — contact support')">
         <div class="ad-badge">Ad</div>
+        <img class="ad-photo" alt="" style="display:none">
         <div class="ad-body">
           <strong>Promote your business here</strong>
           <span>Reach shoppers across Guyana · From GYD 5,000/mo</span>
@@ -202,6 +203,7 @@
     <!-- Ad banner (customer portal only) -->
     <div class="ad-banner customer-ad" id="customer-ad-banner" onclick="showToast('Sponsored · Island Breeze — try Pepperpot this week!')">
       <div class="ad-badge">Sponsored</div>
+      <img class="ad-photo" alt="" style="display:none">
       <div class="ad-body">
         <strong>🍲 Island Breeze — Pepperpot Special</strong>
         <span>GYD 4,800 · Free delivery over GYD 4,000 · Georgetown</span>
@@ -594,6 +596,7 @@
 
     <div class="ad-banner" id="business-ad-banner" onclick="showToast('Advertise on The Gift Shop — contact support')">
       <span class="ad-badge">AD</span>
+      <img class="ad-photo" alt="" style="display:none">
       <div class="ad-body">
         <strong id="business-ad-headline">Get more customers</strong>
         <span id="business-ad-sub">Upgrade to Growth or Premium for lower commission &amp; delivery</span>
@@ -751,6 +754,7 @@
 
     <div class="ad-banner" id="rider-ad-banner" onclick="showToast('Advertise on The Gift Shop — contact support')">
       <span class="ad-badge">AD</span>
+      <img class="ad-photo" alt="" style="display:none">
       <div class="ad-body">
         <strong id="rider-ad-headline">Ride more, earn more</strong>
         <span id="rider-ad-sub">Go online during lunch &amp; dinner rush for the most jobs</span>
@@ -834,6 +838,10 @@
             <div><div class="lbl">Total</div><div class="val" id="mgr-rev-total">GYD 0</div></div>
             <div><div class="lbl">MMG</div><div class="val" style="font-size:14px">61214940</div></div>
           </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span class="small" id="mgr-live-status">Live — updates automatically</span>
+          <button type="button" class="btn-edit" onclick="manualRefreshManager()">🔄 Refresh now</button>
         </div>
         <div class="stats-grid">
           <div class="stat-card"><span class="stat-label">Businesses</span><span class="stat-value" id="mgr-stat-biz">0</span></div>
@@ -922,7 +930,10 @@
       <div id="mgr-businesses" class="biz-panel">
         <div class="panel-header">
           <h3>Businesses</h3>
-          <button class="primary-btn small" onclick="openMgrUserForm('business')">+ Add</button>
+          <div>
+            <button class="btn-edit" onclick="manualRefreshManager()">🔄</button>
+            <button class="primary-btn small" onclick="openMgrUserForm('business')">+ Add</button>
+          </div>
         </div>
         <div id="mgr-biz-list"></div>
       </div>
@@ -930,7 +941,10 @@
       <div id="mgr-customers" class="biz-panel">
         <div class="panel-header">
           <h3>Customers</h3>
-          <button class="primary-btn small" onclick="openMgrUserForm('customer')">+ Add</button>
+          <div>
+            <button class="btn-edit" onclick="manualRefreshManager()">🔄</button>
+            <button class="primary-btn small" onclick="openMgrUserForm('customer')">+ Add</button>
+          </div>
         </div>
         <div id="mgr-cust-list"></div>
       </div>
@@ -938,7 +952,10 @@
       <div id="mgr-riders" class="biz-panel">
         <div class="panel-header">
           <h3>Riders</h3>
-          <button class="primary-btn small" onclick="openMgrUserForm('delivery')">+ Add</button>
+          <div>
+            <button class="btn-edit" onclick="manualRefreshManager()">🔄</button>
+            <button class="primary-btn small" onclick="openMgrUserForm('delivery')">+ Add</button>
+          </div>
         </div>
         <div id="mgr-rider-list"></div>
       </div>
@@ -1060,6 +1077,19 @@
         <div class="form-group">
           <label>Subtext</label>
           <input type="text" id="mgr-ad-sub" placeholder="Short supporting line">
+        </div>
+        <div class="form-group">
+          <label>Ad image (optional)</label>
+          <div class="logo-card-row">
+            <div class="biz-logo-preview" id="mgr-ad-photo-preview">🖼️</div>
+            <div style="flex:1">
+              <label class="primary-btn small" style="display:inline-block;cursor:pointer">
+                Upload image
+                <input type="file" id="mgr-ad-photo-input" accept="image/*" hidden onchange="handleMgrAdPhoto(event)">
+              </label>
+              <button type="button" class="primary-btn small" style="margin-left:6px;background:#6b7280;color:#fff" onclick="clearMgrAdPhoto()">Remove</button>
+            </div>
+          </div>
         </div>
         <div class="form-group">
           <label>Placement</label>
