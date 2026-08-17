@@ -16,6 +16,9 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  /* Remove the gray flash Safari/Chrome show on tap, and skip the ~300ms
+     delay iOS uses to wait for a possible double-tap-to-zoom. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -24,6 +27,24 @@ body {
   color: var(--text);
   line-height: 1.5;
   overflow-x: hidden;
+  /* Smooth momentum scrolling on iOS instead of the choppy default. */
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ===== iOS Safari fixes =====
+   - Any focused form control under 16px makes iOS Safari zoom the whole
+     page in, then not zoom back out — overriding every input/select/
+     textarea's font-size (however specific the rule that set it) is the
+     standard fix; hence the !important. */
+input, select, textarea {
+  font-size: 16px !important;
+}
+button, a, .cat, .nav-item, .biz-tab, [onclick] {
+  touch-action: manipulation;
+}
+.deals-feed, .orders-list, #orders-list, .modal-content, .activity-list,
+#mgr-live-snapshot, #mgr-activity-list, .biz-panel, .pod-history-list {
+  -webkit-overflow-scrolling: touch;
 }
 
 h1, h2, h3, .app-name {
@@ -33,6 +54,7 @@ h1, h2, h3, .app-name {
 .screen {
   display: none;
   min-height: 100vh;
+  min-height: 100dvh; /* iOS Safari: 100vh includes space behind the address bar, causing a jump as it shows/hides while scrolling */
   flex-direction: column;
   max-width: 480px;
   margin: 0 auto;
@@ -391,9 +413,12 @@ h1, h2, h3, .app-name {
   width: 100%;
   max-width: 480px;
   max-height: 90vh;
+  max-height: 90dvh;
   border-radius: 24px 24px 0 0;
   padding: 24px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom)); /* clear the home-indicator gesture area */
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   position: relative;
   animation: slideUp 0.3s ease;
 }
@@ -844,7 +869,7 @@ label.primary-btn.small {
 /* ===== TOAST ===== */
 .toast {
   position: fixed;
-  bottom: 100px;
+  bottom: calc(100px + env(safe-area-inset-bottom)); /* stay clear of the taller bottom-nav on notched iPhones now that viewport-fit=cover activates safe-area-inset-bottom */
   left: 50%;
   transform: translateX(-50%) translateY(20px);
   background: #111;
@@ -2363,7 +2388,7 @@ img.gy-flag-lg {
 
 .live-track-banner {
   position: fixed;
-  bottom: 72px;
+  bottom: calc(72px + env(safe-area-inset-bottom)); /* stay clear of the taller bottom-nav on notched iPhones now that viewport-fit=cover activates safe-area-inset-bottom */
   left: 50%;
   transform: translateX(-50%);
   width: calc(100% - 32px);

@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <!-- iOS Safari auto-links anything that looks like a phone number and
+       underlines it blue, which clashes with this app's own phone-number
+       styling everywhere (rider/business contact info, MMG numbers) -->
+  <meta name="format-detection" content="telephone=no">
+  <meta name="theme-color" content="#1a7a4c">
   <title>The Gift Shop – Guyana</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
