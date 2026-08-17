@@ -759,6 +759,77 @@ function updateHeaderUser() {
   if (profSmall) profSmall.textContent = (currentUser.phone || currentUser.email || "") + " · Georgetown";
 }
 
+/** Edit Profile — shared modal for customers, businesses, and riders. */
+function openEditProfileModal() {
+  if (!currentUser) { showToast('Sign in first'); return; }
+  const nameEl = document.getElementById('ep-name');
+  const phoneEl = document.getElementById('ep-phone');
+  const bizGroup = document.getElementById('ep-business-name-group');
+  const bizNameEl = document.getElementById('ep-business-name');
+  const addrGroup = document.getElementById('ep-address-group');
+  const addrEl = document.getElementById('ep-address');
+  if (nameEl) nameEl.value = currentUser.name || '';
+  if (phoneEl) phoneEl.value = currentUser.phone || '';
+  const isBusiness = currentUser.role === 'business';
+  if (bizGroup) bizGroup.style.display = isBusiness ? 'block' : 'none';
+  if (addrGroup) addrGroup.style.display = isBusiness ? 'block' : 'none';
+  if (isBusiness) {
+    if (bizNameEl) bizNameEl.value = currentUser.businessName || '';
+    if (addrEl) addrEl.value = currentUser.address || '';
+  }
+  document.getElementById('edit-profile-modal')?.classList.add('active');
+}
+
+async function submitEditProfile(e) {
+  e.preventDefault();
+  if (!currentUser) return false;
+  const name = document.getElementById('ep-name')?.value?.trim() || '';
+  const phone = document.getElementById('ep-phone')?.value?.trim() || '';
+  if (!name) { showToast('Enter your name'); return false; }
+  const body = { name, phone };
+  if (currentUser.role === 'business') {
+    const businessName = document.getElementById('ep-business-name')?.value?.trim() || '';
+    const address = document.getElementById('ep-address')?.value?.trim() || '';
+    if (!businessName) { showToast('Enter your business name'); return false; }
+    body.businessName = businessName;
+    body.address = address;
+  }
+
+  if (typeof api !== 'function') { showToast('Offline — profile not saved'); return false; }
+  const res = await api('/api/users/' + encodeURIComponent(currentUser.id), {
+    method: 'PATCH',
+    body: JSON.stringify(body)
+  });
+  if (!res || res.error) {
+    showToast((res && res.error) || 'Could not save profile');
+    return false;
+  }
+
+  // Sync the updated fields into every local copy of this user.
+  Object.assign(currentUser, res.user);
+  try { localStorage.setItem('tgs_user', JSON.stringify(currentUser)); } catch (_) {}
+  if (typeof adminUsers !== 'undefined') {
+    const u = adminUsers.find(x => x.id === currentUser.id || x.identifier === currentUser.identifier);
+    if (u) {
+      Object.assign(u, res.user);
+      if (typeof saveAdminUsers === 'function') saveAdminUsers();
+    }
+  }
+  if (currentUser.role === 'business') {
+    try { localStorage.setItem('tgs_biz_address_' + (currentUser.identifier || 'biz'), currentUser.address || ''); } catch (_) {}
+    // Existing local business-deal cards keep the old business name until
+    // this refreshes them from the server's already-renamed copies.
+    if (typeof refreshDealsFromServer === 'function') await refreshDealsFromServer();
+  }
+
+  closeModal();
+  updateHeaderUser();
+  if (currentUser.role === 'business' && typeof renderBusiness === 'function') renderBusiness();
+  if (currentUser.role === 'delivery' && typeof renderRider === 'function') renderRider();
+  showToast('Profile updated ✅');
+  return false;
+}
+
 function logout() {
   currentUser = null;
   try { localStorage.removeItem("tgs_user"); } catch (_) {}
@@ -1112,13 +1183,14 @@ function canPostDeal() {
     }
     return { ok: true };
   }
-  // Free: one free listing on signup. Any additional listing needs the paid plan.
+  // Free: one free listing every month (rolling 30 days). Any additional
+  // listing in that window needs the paid plan.
   if (s.plan === 'trial') {
     if (s.freeItemSold) {
-      return { ok: false, reason: 'Your free listing is already in use. Subscribe GYD 5,000/mo via MMG to 61214940 for up to 10 listings.' };
+      return { ok: false, reason: 'Your free monthly listing is already used. Subscribe GYD 5,000/mo via MMG to 61214940 for up to 10 listings a month.' };
     }
     if ((s.dealsPosted || 0) >= FREE_MAX_DEALS) {
-      return { ok: false, reason: 'Free plan: 1 listing. Subscribe via MMG to 61214940 for up to 10 listings.' };
+      return { ok: false, reason: 'Free plan: 1 listing a month. Subscribe via MMG to 61214940 for up to 10 listings a month.' };
     }
     return { ok: true };
   }
@@ -1191,13 +1263,13 @@ function updateSubscriptionUI() {
   } else if (s.plan === 'trial') {
     if (badge) { badge.textContent = 'Free listing'; badge.classList.add('trial'); }
     if (label) label.textContent = 'Free plan';
-    if (title) title.textContent = '1 free listing · Full portal access';
+    if (title) title.textContent = '1 free listing/month · Full portal access';
     if (desc) desc.innerHTML =
-      'Every business gets <strong>1 free listing</strong> on signup. For a 2nd listing (and up to 10), subscribe ' +
+      'Every business gets <strong>1 free listing every month</strong>. For more listings (up to 10/month), subscribe ' +
       '(GYD 5,000/mo via MMG to <strong>61214940</strong>).';
     if (meta) meta.textContent =
-      (s.freeItemSold ? 'Free listing used — subscribe to add more · ' : '') +
-      'Listings used: ' + (s.dealsPosted || 0) + ' / ' + FREE_MAX_DEALS;
+      (s.freeItemSold ? 'Free monthly listing used — subscribe to add more · ' : '') +
+      'Listings this month: ' + (s.dealsPosted || 0) + ' / ' + FREE_MAX_DEALS;
     if (payBtn) {
       payBtn.style.display = 'block';
       payBtn.textContent = s.freeItemSold ? 'Subscribe — Pay GYD 5,000 via MMG' : 'Upgrade early — Pay GYD 5,000 via MMG';
@@ -4345,12 +4417,21 @@ function decreaseStockForCart() {
   }
 }
 
-function saveBizPickupAddress() {
+async function saveBizPickupAddress() {
   const v = document.getElementById('biz-pickup-address')?.value?.trim() || '';
   if (!v) { showToast('Enter a pickup address'); return; }
   if (currentUser) {
     currentUser.address = v;
     try { localStorage.setItem('tgs_user', JSON.stringify(currentUser)); } catch (_) {}
+    // Persist to the real account too (not just this browser) — same
+    // endpoint the Edit Profile modal uses, so it stays correct on any
+    // device the business signs into.
+    if (typeof api === 'function') {
+      await api('/api/users/' + encodeURIComponent(currentUser.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ address: v })
+      });
+    }
   }
   try { localStorage.setItem('tgs_biz_address_' + ((currentUser && currentUser.identifier) || 'biz'), v); } catch (_) {}
   if (typeof adminUsers !== 'undefined' && currentUser) {

@@ -187,6 +187,7 @@
         <input type="checkbox" id="auto-refresh-customer" onchange="toggleAutoRefresh(this.checked)">
         <span>↻ Live</span>
       </label>
+      <button class="icon-btn" onclick="openEditProfileModal()" title="Edit profile">✏️</button>
       <button class="icon-btn" onclick="showCart()">🛒 <span id="cart-count" class="badge">0</span></button>
     </header>
 
@@ -259,7 +260,7 @@
         <div class="profile-link">📍 Delivery addresses</div>
         <div class="profile-link">🛒 Order history</div>
         <div class="profile-link" onclick="openCustomerAdForm()">📢 Advertise with us</div>
-        <div class="profile-link">⚙️ Settings</div>
+        <div class="profile-link" onclick="openEditProfileModal()">✏️ Edit profile</div>
         <div class="profile-link">💬 Help & support</div>
         <div class="profile-link" onclick="logout()" style="color:#dc2626">🚪 Sign out</div>
       </div>
@@ -549,6 +550,34 @@
     </div>
   </div>
 
+  <!-- Edit Profile — shared by customers, businesses, and riders -->
+  <div id="edit-profile-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeModal()">✕</button>
+      <h2>Edit Profile</h2>
+      <form id="edit-profile-form" onsubmit="return submitEditProfile(event)">
+        <div class="form-group">
+          <label>Full name</label>
+          <input type="text" id="ep-name" required>
+        </div>
+        <div class="form-group">
+          <label>Phone</label>
+          <input type="text" id="ep-phone" placeholder="592-6XX-XXXX">
+        </div>
+        <div class="form-group" id="ep-business-name-group" style="display:none">
+          <label>Business name</label>
+          <input type="text" id="ep-business-name">
+        </div>
+        <div class="form-group" id="ep-address-group" style="display:none">
+          <label>Pickup / business address</label>
+          <input type="text" id="ep-address" placeholder="Street, area, Georgetown">
+        </div>
+        <p class="small" style="margin:8px 0 12px;color:var(--muted)">Your login email and password aren't changed here — use Forgot password on the sign-in screen to change your password.</p>
+        <button type="submit" class="primary-btn">Save changes</button>
+      </form>
+    </div>
+  </div>
+
   <div id="rider-sub-pay-modal" class="modal">
     <div class="modal-content">
       <button class="close-modal" onclick="closeModal()">✕</button>
@@ -588,6 +617,7 @@
         <input type="checkbox" id="auto-refresh-business" onchange="toggleAutoRefresh(this.checked)">
         <span>↻ Live</span>
       </label>
+      <button class="icon-btn" onclick="openEditProfileModal()" title="Edit profile">✏️</button>
       <span class="plan-badge" id="biz-plan-badge">Free Trial</span>
     </header>
 
@@ -742,6 +772,7 @@
         <input type="checkbox" id="auto-refresh-delivery" onchange="toggleAutoRefresh(this.checked)">
         <span>↻ Live</span>
       </label>
+      <button class="icon-btn" onclick="openEditProfileModal()" title="Edit profile">✏️</button>
       <span class="earnings-badge" id="rider-earnings">GYD 0</span>
     </header>
 

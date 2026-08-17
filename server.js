@@ -203,18 +203,23 @@ function riderActiveJobCount(riderId) {
 }
 
 // ─── Business plan / listing limits ────────────────────────────────────────
-// Every business gets ONE free listing on signup. A 2nd (or further) listing
-// requires an active paid monthly subscription (GYD 5,000/mo via MMG,
-// enforced here — not just in the UI — so it can't be bypassed by clearing
-// local storage or signing in on a different device).
+// Every business gets ONE free deal listing per month. Any listing beyond
+// that in the same rolling 30-day window requires an active paid monthly
+// subscription (GYD 5,000/mo via MMG, up to 10 listings/month). Enforced
+// here — not just in the UI — so it can't be bypassed by clearing local
+// storage or signing in on a different device. The count is a rolling
+// 30-day window rather than a stored counter, so it self-resets every
+// month with no separate cron/reset job needed.
 const FREE_LISTING_LIMIT = 1;
 const PAID_LISTING_LIMIT = 10;
 const BUSINESS_SUB_FEE_GYD = 5000;
+const LISTING_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 function businessIsPaid(business) {
   return !!(business && business.plan === 'paid' && business.paidUntil && new Date(business.paidUntil).getTime() > Date.now());
 }
 function businessDealCount(businessId) {
-  return deals.filter(d => d.businessId === businessId).length;
+  const cutoff = Date.now() - LISTING_WINDOW_MS;
+  return deals.filter(d => d.businessId === businessId && new Date(d.createdAt || 0).getTime() > cutoff).length;
 }
 function businessListingLimit(business) {
   return businessIsPaid(business) ? PAID_LISTING_LIMIT : FREE_LISTING_LIMIT;
@@ -477,8 +482,8 @@ async function handleAPI(req, res, pathname, query) {
           if (count >= limit) {
             return sendJSON(res, 402, {
               error: businessIsPaid(business)
-                ? `Paid plan allows up to ${PAID_LISTING_LIMIT} listings. Limit reached.`
-                : `Your free listing is already in use. Subscribe (GYD ${BUSINESS_SUB_FEE_GYD.toLocaleString()}/mo via MMG 61214940) for up to ${PAID_LISTING_LIMIT} listings.`
+                ? `Paid plan allows up to ${PAID_LISTING_LIMIT} listings this month. Limit reached.`
+                : `Your free monthly listing is already used. Subscribe (GYD ${BUSINESS_SUB_FEE_GYD.toLocaleString()}/mo via MMG 61214940) for up to ${PAID_LISTING_LIMIT} listings a month.`
             });
           }
         }
@@ -495,6 +500,9 @@ async function handleAPI(req, res, pathname, query) {
         businessId: business ? business.id : ((existing && existing.businessId) || null),
         // Trust the real account's business name over a client-supplied string once we have one.
         business: (business && business.businessName) || body.business || (existing && existing.business) || 'Local Business',
+        // Used to compute the rolling 30-day free-listing window — keep the
+        // original creation time on edits, don't reset it every save.
+        createdAt: (existing && existing.createdAt) || new Date().toISOString(),
         title: body.title,
         price: Number(body.price),
         original: Number(body.original) || Number(body.price),
@@ -905,7 +913,10 @@ async function handleAPI(req, res, pathname, query) {
       orders: myOrders.length,
       activeDeals,
       netPayout,
-      listingsUsed: myDeals.length,
+      // Listings counted against the free/paid monthly quota — a rolling
+      // 30-day window, NOT the lifetime total (that's activeDeals above),
+      // so this correctly drops back to 0 a month after the last listing.
+      listingsUsed: businessDealCount(business.id),
       listingLimit: businessListingLimit(business),
       recentOrders
     });
@@ -1397,6 +1408,58 @@ async function handleAPI(req, res, pathname, query) {
       return sendJSON(res, 200, { success: true, counts: { users: users.length, deals: deals.length, riders: riders.length } });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Restore failed' });
+    }
+  }
+
+  // Self-service profile edit — customers, businesses, and riders can update
+  // their own name/phone/address (and business name, for a business). Does
+  // NOT change email/identifier (that's the login key — changing it safely
+  // needs its own verification flow) or password (use forgot/reset-password
+  // for that). Riders also get their matching `riders` directory entry kept
+  // in sync, since that's the copy used for public listing/dispatch.
+  const userEditMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
+  if (userEditMatch && method === 'PATCH') {
+    try {
+      const body = await readBody(req);
+      const user = users.find(u => u.id === userEditMatch[1]);
+      if (!user) return sendJSON(res, 404, { error: 'Account not found' });
+      if (user.role === 'manager') return sendJSON(res, 403, { error: 'Manager profile cannot be edited here' });
+
+      if (body.name !== undefined) {
+        const name = String(body.name).trim();
+        if (!name) return sendJSON(res, 400, { error: 'Name cannot be empty' });
+        user.name = name;
+      }
+      if (body.phone !== undefined) user.phone = String(body.phone).trim();
+      if (body.address !== undefined) user.address = String(body.address).trim() || null;
+      if (user.role === 'business' && body.businessName !== undefined) {
+        const bn = String(body.businessName).trim();
+        if (!bn) return sendJSON(res, 400, { error: 'Business name cannot be empty' });
+        user.businessName = bn;
+      }
+      persistUsers();
+
+      // Keep the rider directory (separate collection, used for public
+      // listings/dispatch matching) in sync with the account's own name/phone.
+      if (user.role === 'delivery' && user.riderId) {
+        const rider = riders.find(r => r.id === user.riderId);
+        if (rider) {
+          if (body.name !== undefined) rider.name = user.name;
+          if (body.phone !== undefined) rider.phone = user.phone;
+          persistRiders();
+        }
+      }
+      // Existing listings keep showing the business's old name until edited —
+      // refresh them so a rename shows up everywhere immediately.
+      if (user.role === 'business' && body.businessName !== undefined) {
+        let changed = false;
+        deals.forEach(d => { if (d.businessId === user.id) { d.business = user.businessName; changed = true; } });
+        if (changed) persistDeals();
+      }
+
+      return sendJSON(res, 200, { success: true, user: publicUser(user) });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid JSON' });
     }
   }
 
