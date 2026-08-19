@@ -697,6 +697,9 @@ function enterApp(role) {
     updateHeaderUser();
     if (typeof updateLiveTrackBanner === "function") updateLiveTrackBanner();
     if (typeof renderCustomerOrders === "function") renderCustomerOrders();
+    // Resume live order-status polling if there's already an active
+    // delivery in flight (e.g. reopening the app mid-delivery).
+    if (typeof startCustomerOrderPolling === "function") startCustomerOrderPolling();
   } else if (role === "business") {
     document.getElementById("business-app").classList.add("active");
     if (typeof renderBusiness === "function") renderBusiness();
@@ -705,6 +708,9 @@ function enterApp(role) {
     // Real weekly sales / order count / plan status for THIS business only —
     // pulled fresh on every login so it's right even on a brand-new device.
     if (typeof refreshBusinessDashboardFromServer === "function") refreshBusinessDashboardFromServer();
+    // Real incoming-order feed (rider acceptance, pickup confirmation) —
+    // time-sensitive, so it polls regardless of the general auto-refresh toggle.
+    if (typeof startBusinessOrdersPolling === "function") startBusinessOrdersPolling();
   } else if (role === "delivery") {
     document.getElementById("delivery-app").classList.add("active");
     if (typeof syncRidersFromUsers === "function") syncRidersFromUsers();
@@ -1003,33 +1009,61 @@ function showCart() {
   });
 }
 
+// Standard delivery pricing: GYD 700/mile (business pickup → customer
+// drop-off), plus GYD 100/min of rider waiting time if they arrive before
+// the business confirms ready (billed after pickup, not shown at checkout
+// since it isn't known yet). This replaces the old flat GYD 500 / free-over-
+// GYD-4000 fee — the real fee is computed server-side from real distance in
+// POST /api/orders; this is just a live on-screen estimate using the
+// customer's captured checkout location (or the Georgetown-centre default
+// pickup point if geolocation isn't available/granted).
+const DELIVERY_MILE_RATE_GYD = 700;
+let checkoutCoords = null; // { lat, lng } captured once per checkout open
+
+function estimateDeliveryFee(subtotal) {
+  const pickup = { lat: 6.812, lng: -58.155 }; // business pickup fallback (matches server default)
+  const drop = checkoutCoords || pickup;
+  const miles = typeof distKm === 'function' ? distKm(pickup, drop) * 0.621371 : 0;
+  const billedMiles = Math.max(1, Math.round(miles * 10) / 10);
+  return { miles: Math.round(miles * 10) / 10, fee: Math.round(billedMiles * DELIVERY_MILE_RATE_GYD) };
+}
+
 function updateCartTotal() {
   const subtotal = cart.reduce((s, i) => s + i.price * i.qty, 0);
   const isDelivery = document.querySelector('input[name="fulfillment"]:checked')?.value === 'delivery';
   const feeRow = document.getElementById('delivery-fee-row');
   const details = document.getElementById('delivery-details');
-  
+
   let deliveryFee = 0;
   if (isDelivery) {
     feeRow.classList.remove('hidden');
     if (details) details.classList.remove('hidden');
-    if (subtotal >= 4000) {
-      document.getElementById('delivery-fee-amount').textContent = 'FREE';
-      deliveryFee = 0;
-    } else {
-      document.getElementById('delivery-fee-amount').textContent = 'GYD 500';
-      deliveryFee = 500;
+    if (!checkoutCoords && navigator.geolocation) {
+      // Best-effort — updates the estimate once we have a fix; checkout
+      // isn't blocked on this (falls back to the pickup point, i.e. a
+      // 1-mile minimum charge, until/unless it resolves).
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          checkoutCoords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          updateCartTotal();
+        },
+        () => {},
+        { timeout: 6000, maximumAge: 60000 }
+      );
     }
+    const est = estimateDeliveryFee(subtotal);
+    document.getElementById('delivery-fee-amount').textContent = `GYD ${est.fee.toLocaleString()} (~${est.miles} mi)`;
+    deliveryFee = est.fee;
   } else {
     feeRow.classList.add('hidden');
     if (details) details.classList.add('hidden');
   }
-  
+
   document.getElementById('cart-total').textContent = `GYD ${(subtotal + deliveryFee).toLocaleString()}`;
 }
 
-function placeOrder() {
-  const payMethod = window._payMethod || document.querySelector('.pay-method.active')?.dataset?.method || 'cod';
+async function placeOrder() {
+  const payMethod = document.querySelector('input[name="pay-method"]:checked')?.value || window._payMethod || 'cod';
   if (payMethod === 'mmg') {
     const tx = document.getElementById('mmg-txid')?.value?.trim() || '';
     if (tx.length < 4) {
@@ -1039,7 +1073,7 @@ function placeOrder() {
     window._lastMmgTx = tx;
   }
   const isDelivery = document.querySelector('input[name="fulfillment"]:checked')?.value === 'delivery';
-  
+
   if (isDelivery) {
     const addr = document.getElementById('delivery-address')?.value?.trim();
     const phone = document.getElementById('delivery-phone')?.value?.trim();
@@ -1047,36 +1081,74 @@ function placeOrder() {
       showToast('Please enter delivery address and contact number');
       return;
     }
-    // Store for tracking screen
     window.lastDelivery = { address: addr, phone: phone };
-    if (typeof createLiveOrder === 'function' && isDelivery) {
-      const totalEl = document.getElementById('cart-total');
-      const totalTxt = totalEl ? totalEl.textContent.replace(/[^0-9]/g, '') : '0';
-      const live = createLiveOrder({
-        item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
-        total: parseInt(totalTxt, 10) || 0,
-        address: addr,
-        phone: phone,
-        business: (cart && cart[0] && cart[0].business) || ''
-      });
-      window.activeTrackOrderId = live.id;
-      window.lastDelivery.orderId = live.id;
+
+    const btn = document.getElementById('place-order-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Placing order…'; }
+
+    const subtotal = cart.reduce((s, i) => s + i.price * i.qty, 0);
+    const payload = {
+      items: cart.map(i => ({ id: i.id, title: i.title || i.name || 'Item', price: i.price, qty: i.qty })),
+      fulfillment: 'delivery',
+      paymentMethod: payMethod,
+      deliveryAddress: addr,
+      deliveryPhone: phone,
+      mmgPhone: payMethod === 'mmg' ? window._lastMmgTx : null,
+      subtotal,
+      deliveryLat: checkoutCoords ? checkoutCoords.lat : null,
+      deliveryLng: checkoutCoords ? checkoutCoords.lng : null,
+      customerId: (currentUser && currentUser.id) || null,
+      customerName: (currentUser && currentUser.name) || 'Customer',
+      customerEmail: (currentUser && currentUser.email) || ''
+    };
+
+    // Real, server-backed order: creates the canonical order record AND
+    // posts the delivery to the rider job board in one call — this is what
+    // makes "the delivery portal gets a notification so riders can accept
+    // the job" real instead of a local-only simulation.
+    const result = typeof placeOrderViaAPI === 'function' ? await placeOrderViaAPI(payload) : null;
+    if (btn) { btn.disabled = false; btn.textContent = 'Place Order'; }
+    if (!result || result.success === false || !result.order) {
+      showToast((result && result.error) || 'Could not place order — please check your connection and try again');
+      return;
     }
-  }
-  
-  cart = [];
-  updateCartCount();
-  closeModal();
-  
-  if (isDelivery) {
-    showToast('Order placed! A rider will pick it up soon 🛵');
-    // After a short delay show the tracking modal (demo)
+    const order = result.order;
+
+    // Mirror into the local live-order list the Orders tab / tracking modal
+    // read from, so it shows up immediately without waiting on the first poll.
+    const liveOrder = {
+      id: order.id,
+      item: payload.items.map(i => i.title).join(', '),
+      total: order.total,
+      address: order.deliveryAddress,
+      phone: order.deliveryPhone,
+      customerEmail: payload.customerEmail,
+      customerName: payload.customerName,
+      status: order.status,
+      rider: null,
+      createdAt: order.createdAt
+    };
+    customerLiveOrders.unshift(liveOrder);
+    if (typeof saveLiveOrders === 'function') saveLiveOrders();
+    window.activeTrackOrderId = order.id;
+    window.lastDelivery.orderId = order.id;
+    if (typeof startCustomerOrderPolling === 'function') startCustomerOrderPolling();
+    if (typeof decreaseStockForCart === 'function') decreaseStockForCart();
+    if (typeof updateLiveTrackBanner === 'function') updateLiveTrackBanner();
+    if (typeof renderCustomerOrders === 'function') renderCustomerOrders();
+
+    cart = [];
+    updateCartCount();
+    closeModal();
+
+    showToast(`Order placed! GYD ${(order.deliveryFee || 0).toLocaleString()} delivery fee (~${order.distanceMiles || 0} mi) — nearby riders notified 🛵`);
     setTimeout(() => {
-      if (window.lastDelivery) {
-        openTrackingWithRider(window.lastDelivery.address, window.lastDelivery.phone);
-      }
-    }, 1800);
+      if (typeof openTrackingForOrder === 'function') openTrackingForOrder(order.id);
+    }, 1200);
   } else {
+    cart = [];
+    updateCartCount();
+    closeModal();
     showToast('Order placed! Show your voucher in-store 🎁');
   }
 }
@@ -1764,26 +1836,102 @@ function renderBusiness() {
   }
   const orderList = document.getElementById('biz-order-list');
   if (!orderList) return;
-  orderList.innerHTML = incomingOrders.map(o => `
+  if (!incomingOrders.length) {
+    orderList.innerHTML = '<p class="small" style="text-align:center;padding:20px;color:var(--muted)">No orders yet.</p>';
+    return;
+  }
+  // Real order lifecycle (see refreshBusinessOrdersFromServer): confirmed →
+  // accepted (a rider has taken the job — confirm it's ready) →
+  // ready_for_pickup (waiting for the rider to arrive) → picked_up → delivered.
+  const BIZ_STATUS_LABEL = {
+    confirmed: 'Waiting for a rider to accept',
+    accepted: 'Rider assigned — confirm pickup',
+    ready_for_pickup: 'Ready — waiting for rider',
+    picked_up: 'Picked up — out for delivery',
+    delivered: 'Delivered'
+  };
+  orderList.innerHTML = incomingOrders.map(o => {
+    const label = BIZ_STATUS_LABEL[o.status] || o.status || 'New';
+    const pillClass = o.status === 'delivered' ? 'delivered'
+      : (o.status === 'ready_for_pickup' || o.status === 'picked_up' ? 'ready'
+      : (o.status === 'accepted' ? 'active' : 'pending'));
+    return `
     <div class="order-card">
       <h4>${o.item}</h4>
       <div class="meta">${o.id} · ${o.customer} · ${o.type}</div>
+      ${o.rider ? `<div class="meta">🛵 Rider: ${o.rider.name || 'Rider'}</div>` : ''}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-        <strong>GYD ${o.total.toLocaleString()}</strong>
-        <span class="status-pill ${o.status === 'Ready' ? 'ready' : o.status === 'New' ? 'pending' : 'active'}">${o.status}</span>
+        <strong>GYD ${(o.total || 0).toLocaleString()}</strong>
+        <span class="status-pill ${pillClass}">${label}</span>
       </div>
-      ${o.status === 'New' || o.status === 'Preparing' ? `
+      ${o.status === 'accepted' ? `
         <button class="primary-btn small" style="margin-top:10px" onclick="markReady('${o.id}')">
-          Mark Ready for Rider
+          Confirm Ready for Pickup
         </button>
       ` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
-function markReady(id) {
-  showToast(`Order ${id} marked ready. Notifying nearby riders...`);
-  // In real app this would push to delivery portal
+// Real business confirmation — only after this does the rider gate open to
+// allow "picked up" (see POST /api/orders/:id/ready-for-pickup and the
+// picked_up gate in PATCH /api/orders/:id/status, server.js).
+async function markReady(id) {
+  if (typeof api !== 'function') return;
+  const res = await api('/api/orders/' + encodeURIComponent(id) + '/ready-for-pickup', {
+    method: 'POST', body: JSON.stringify({})
+  });
+  if (!res || res.success === false) {
+    showToast((res && res.error) || 'Could not mark this order ready — please try again');
+    return;
+  }
+  showToast(`Order ${id} marked ready. The rider can now pick it up.`);
+  const entry = incomingOrders.find(o => o.id === id);
+  if (entry) entry.status = 'ready_for_pickup';
+  if (typeof saveIncomingOrders === 'function') saveIncomingOrders();
+  renderBusiness();
+}
+
+// ===== REAL INCOMING-ORDER FEED (business) =====
+async function refreshBusinessOrdersFromServer() {
+  if (!currentUser || currentUser.role !== 'business' || typeof api !== 'function') return;
+  const businessId = currentUser.id;
+  try {
+    const res = await api('/api/business/orders?businessId=' + encodeURIComponent(businessId));
+    const list = res && res.orders;
+    if (!Array.isArray(list)) return;
+    let notify = null;
+    list.forEach(o => {
+      const idx = incomingOrders.findIndex(x => x.id === o.id);
+      const prevStatus = idx !== -1 ? incomingOrders[idx].status : null;
+      const mapped = {
+        id: o.id, item: o.item, type: o.type, total: o.total, status: o.status,
+        customer: o.customer, rider: o.rider, readyForPickupAt: o.readyForPickupAt, createdAt: o.createdAt
+      };
+      if (idx === -1) incomingOrders.unshift(mapped); else incomingOrders[idx] = mapped;
+      if (prevStatus !== 'accepted' && o.status === 'accepted') notify = o.id;
+    });
+    if (typeof saveIncomingOrders === 'function') saveIncomingOrders();
+    if (notify) showToast(`🛵 A rider accepted order ${notify} — confirm when it's ready for pickup`);
+    if (typeof renderBusiness === 'function' && document.getElementById('business-app')?.classList.contains('active')) {
+      renderBusiness();
+    }
+  } catch (e) {
+    console.warn('refreshBusinessOrdersFromServer', e);
+  }
+}
+let businessOrdersPollTimer = null;
+function startBusinessOrdersPolling() {
+  stopBusinessOrdersPolling();
+  refreshBusinessOrdersFromServer();
+  businessOrdersPollTimer = setInterval(refreshBusinessOrdersFromServer, 6000);
+}
+function stopBusinessOrdersPolling() {
+  if (businessOrdersPollTimer) {
+    clearInterval(businessOrdersPollTimer);
+    businessOrdersPollTimer = null;
+  }
 }
 
 // Business tabs
@@ -2243,7 +2391,9 @@ async function acceptOrder(id) {
       <div>📞 ${order.phone || '—'}</div>
     </div>
 
+    <button type="button" class="primary-btn arrived-btn" style="margin:8px 0;background:#f59e0b" onclick="markArrivedAtPickup('${order.id}')">📍 I've arrived at the business</button>
     <button type="button" class="primary-btn pickup-btn" style="margin:8px 0" onclick="markOrderPickedUp('${order.id}')">✅ Mark picked up — on the way</button>
+    <p class="small" style="margin:-4px 0 8px;color:var(--muted)">The business must confirm the order is ready before you can mark it picked up.</p>
     
     <div class="rider-map-wrap">
       <div id="rider-live-map" class="gps-map"></div>
@@ -2519,59 +2669,6 @@ async function loadPodHistory() {
 
 
 
-// When customer tracking modal opens, init map
-const _origPlaceOrder = placeOrder;
-placeOrder = function() {
-  const isDelivery = document.querySelector('input[name="fulfillment"]:checked')?.value === 'delivery';
-  if (isDelivery) {
-    const addr = document.getElementById('delivery-address')?.value?.trim();
-    const phone = document.getElementById('delivery-phone')?.value?.trim();
-    if (!addr || !phone) {
-      showToast('Please enter delivery address and contact number');
-      return;
-    }
-    window.lastDelivery = { address: addr, phone: phone };
-    if (typeof createLiveOrder === 'function' && isDelivery) {
-      const totalEl = document.getElementById('cart-total');
-      const totalTxt = totalEl ? totalEl.textContent.replace(/[^0-9]/g, '') : '0';
-      const live = createLiveOrder({
-        item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
-        total: parseInt(totalTxt, 10) || 0,
-        address: addr,
-        phone: phone,
-        business: (cart && cart[0] && cart[0].business) || ''
-      });
-      window.activeTrackOrderId = live.id;
-      window.lastDelivery.orderId = live.id;
-    }
-    // Use a Georgetown destination near the sample points
-    activeOrderDest = { lat: 6.812, lng: -58.155 };
-  }
-  cart = [];
-  updateCartCount();
-  closeModal();
-  if (isDelivery) {
-    showToast('Order placed! Rider will share live location 🛵');
-    setTimeout(() => {
-      if (window.lastDelivery) {
-        document.getElementById('track-address').textContent = window.lastDelivery.address;
-        document.getElementById('track-phone').textContent = 'Contact: ' + window.lastDelivery.phone;
-        customerMap = null;
-        customerRiderMarker = null;
-        document.getElementById('tracking-modal').classList.add('active');
-        // Start from a nearby point and animate
-        currentRiderPos = { lat: 6.8013, lng: -58.1551 };
-        setTimeout(() => {
-          updateCustomerTrackingMap(currentRiderPos);
-          startSimulation();
-        }, 400);
-      }
-    }, 1500);
-  } else {
-    showToast('Order placed! Show your voucher in-store 🎁');
-  }
-};
-
 function toggleOnline(el) {
   const on = el.checked;
   document.getElementById('online-label').textContent = on ? "You're Online" : "You're Offline";
@@ -2653,76 +2750,6 @@ function showPayPanel(method) {
     if (btn) btn.textContent = 'Place Order';
   }
 }
-
-// Wrap / enhance placeOrder to handle payment method
-const _placeOrderBase = typeof placeOrder === 'function' ? placeOrder : null;
-
-placeOrder = function() {
-  const isDelivery = document.querySelector('input[name="fulfillment"]:checked')?.value === 'delivery';
-  const payMethod = document.querySelector('input[name="pay-method"]:checked')?.value || 'cod';
-
-  if (isDelivery) {
-    const addr = document.getElementById('delivery-address')?.value?.trim();
-    const phone = document.getElementById('delivery-phone')?.value?.trim();
-    if (!addr || !phone) {
-      showToast('Please enter delivery address and contact number');
-      return;
-    }
-    window.lastDelivery = { address: addr, phone: phone };
-    if (typeof createLiveOrder === 'function' && isDelivery) {
-      const totalEl = document.getElementById('cart-total');
-      const totalTxt = totalEl ? totalEl.textContent.replace(/[^0-9]/g, '') : '0';
-      const live = createLiveOrder({
-        item: (cart && cart[0]) ? cart.map(x => x.title || x.name || 'Item').join(', ') : 'Delivery order',
-        total: parseInt(totalTxt, 10) || 0,
-        address: addr,
-        phone: phone,
-        business: (cart && cart[0] && cart[0].business) || ''
-      });
-      window.activeTrackOrderId = live.id;
-      window.lastDelivery.orderId = live.id;
-    }
-    activeOrderDest = { lat: 6.812, lng: -58.155 };
-  }
-
-  // Payment-specific validation / simulation
-  if (payMethod === 'mmg') {
-    const mmgPhone = document.getElementById('mmg-phone')?.value?.trim();
-    if (!mmgPhone) {
-      showToast('Enter your MMG phone number');
-      return;
-    }
-    showToast('Opening MMG… confirm payment in the MMG app');
-    setTimeout(() => showToast('MMG payment received ✓'), 1600);
-  } else if (payMethod === 'bank') {
-    showToast('Order placed. Transfer using the reference shown. We confirm when funds arrive.');
-  } else if (payMethod === 'card') {
-    showToast('Redirecting to secure card page…');
-    setTimeout(() => showToast('Card payment successful ✓'), 1500);
-  } else {
-    // COD
-    if (isDelivery) {
-      showToast('Order placed! Pay cash to the rider on delivery 💵');
-    } else {
-      showToast('Order placed! Pay in-store when you collect 🎁');
-    }
-  }
-
-  cart = [];
-  updateCartCount();
-  closeModal();
-
-  // Delivery tracking after short delay for paid/COD delivery
-  if (isDelivery && (payMethod === 'cod' || payMethod === 'mmg' || payMethod === 'card' || payMethod === 'bank')) {
-    setTimeout(() => {
-      if (window.lastDelivery) {
-        customerMap = null;
-        customerRiderMarker = null;
-        openTrackingWithRider(window.lastDelivery.address, window.lastDelivery.phone);
-      }
-    }, 2000);
-  }
-};
 
 // ===== ASSIGNED RIDER INFO (shown to customer) =====
 let sampleRiders = []; // Real registered riders only
@@ -3645,13 +3672,15 @@ function pauseBizAd(id) {
 
 
 // ===== LIVE DELIVERY STATUS (customer) =====
-const DELIVERY_STEPS = ['confirmed','preparing','accepted','picked_up','on_the_way','delivered'];
+// Mirrors the real server-side order.status values (see POST /api/orders,
+// /api/orders/:id/ready-for-pickup and PATCH /api/orders/:id/status in
+// server.js) — this is a real lifecycle now, not a local simulation.
+const DELIVERY_STEPS = ['confirmed', 'accepted', 'ready_for_pickup', 'picked_up', 'delivered'];
 const STEP_LABELS = {
-  picked_up: 'Picked up — on the way',
-  confirmed: 'Order confirmed',
-  preparing: 'Business is preparing',
+  confirmed: 'Order confirmed — notifying nearby riders',
   accepted: 'Rider accepted your order',
-  on_the_way: 'Rider is on the way',
+  ready_for_pickup: 'Business confirmed — rider heading to pick up',
+  picked_up: 'Picked up — on the way to you',
   delivered: 'Delivered'
 };
 
@@ -3785,10 +3814,10 @@ function updateLiveTrackBanner() {
   }
   banner.classList.remove('hidden');
   const msg = {
-    confirmed: 'Order confirmed — waiting for kitchen…',
-    preparing: 'Being prepared — waiting for a rider…',
-    accepted: 'Rider accepted — tap to track live',
-    on_the_way: 'Rider on the way — tap for live map'
+    confirmed: 'Order confirmed — notifying nearby riders…',
+    accepted: 'Rider accepted — waiting for business to confirm pickup',
+    ready_for_pickup: 'Business confirmed — rider heading to pick up',
+    picked_up: 'Picked up — on the way to you'
   };
   if (text) text.textContent = msg[active.status] || 'Live delivery — tap to track';
 }
@@ -3801,7 +3830,7 @@ function renderCustomerOrders() {
     return;
   }
   list.innerHTML = customerLiveOrders.map(o => {
-    const pillClass = o.status === 'delivered' ? 'delivered' : (o.status === 'confirmed' || o.status === 'preparing' ? 'waiting' : '');
+    const pillClass = o.status === 'delivered' ? 'delivered' : (o.status === 'confirmed' ? 'waiting' : '');
     const label = STEP_LABELS[o.status] || o.status;
     const canTrack = o.status !== 'delivered';
     return `
@@ -3825,8 +3854,8 @@ function openTrackingForOrder(id) {
   openTrackingWithRider(o.address, o.phone);
   setTrackStatusSteps(o.status);
   if (o.rider) setTrackingRider(o.rider);
-  // If accepted or on the way, ensure map starts
-  if (['accepted', 'on_the_way'].includes(o.status)) {
+  // If a rider is assigned and en route (in any of these stages), ensure map starts
+  if (['accepted', 'ready_for_pickup', 'picked_up'].includes(o.status)) {
     setTimeout(() => {
       if (typeof initCustomerMap === 'function') initCustomerMap();
       else if (typeof startCustomerTracking === 'function') startCustomerTracking();
@@ -3840,19 +3869,16 @@ function openActiveTracking() {
   else showToast('No active delivery right now');
 }
 
-// When rider accepts, advance customer live status
+// Optimistic same-tab/same-device update when a rider accepts a job (real
+// cross-device notification comes from pollActiveCustomerOrder() polling
+// the server, below — this just avoids waiting on the next poll tick when
+// the customer and rider happen to share this browser).
 function notifyCustomerRiderAccepted(orderId, riderInfo) {
-  // Match by any active order if ids differ in demo
   let o = orderId ? customerLiveOrders.find(x => x.id === orderId) : null;
   if (!o) o = getActiveLiveOrder();
   if (!o) return;
-  o.rider = riderInfo || {
-    name: (typeof Riders !== 'undefined' && Riders[0]) ? Riders[0].name : 'Marcus D.',
-    phone: (typeof Riders !== 'undefined' && Riders[0]) ? Riders[0].phone : '592-671-8801',
-    rating: 4.9
-  };
+  o.rider = riderInfo || o.rider;
   updateLiveOrderStatus(o.id, 'accepted', { rider: o.rider });
-  setTimeout(() => updateLiveOrderStatus(o.id, 'on_the_way'), 2500);
   showToast('🛵 Rider accepted your order — track live in Orders');
 }
 
@@ -3860,6 +3886,53 @@ function notifyCustomerDelivered(orderId) {
   let o = orderId ? customerLiveOrders.find(x => x.id === orderId) : getActiveLiveOrder();
   if (!o) return;
   updateLiveOrderStatus(o.id, 'delivered');
+  if (typeof stopCustomerOrderPolling === 'function') stopCustomerOrderPolling();
+}
+
+// ===== REAL ORDER-STATUS POLLING (customer) =====
+// Cross-device notifications for "rider accepted", "business confirmed
+// ready for pickup", and "picked up / delivered" — polls the real order
+// record instead of relying on a local fake timer.
+let customerOrderPollTimer = null;
+async function pollActiveCustomerOrder() {
+  const active = getActiveLiveOrder();
+  if (!active || !currentUser || currentUser.role !== 'customer' || typeof api !== 'function') {
+    stopCustomerOrderPolling();
+    return;
+  }
+  try {
+    const order = await api('/api/orders/' + encodeURIComponent(active.id));
+    if (!order || order.error) return;
+    const prevStatus = active.status;
+    const rider = order.rider ? { name: order.rider.name, phone: order.rider.phone, rating: order.rider.rating } : active.rider;
+    if (order.status !== prevStatus || (order.rider && !active.rider)) {
+      updateLiveOrderStatus(active.id, order.status, { rider, total: order.total, waitingFee: order.waitingFee });
+      if (order.status !== prevStatus) {
+        const toastMsg = {
+          accepted: '🛵 A rider accepted your order',
+          ready_for_pickup: '📦 Business confirmed ready — rider is heading to pick up',
+          picked_up: '🚴 Picked up — on the way to you',
+          delivered: '✅ Delivered — enjoy!'
+        }[order.status];
+        if (toastMsg) showToast(toastMsg);
+      }
+    }
+    if (order.status === 'delivered') stopCustomerOrderPolling();
+  } catch (e) {
+    console.warn('pollActiveCustomerOrder', e);
+  }
+}
+function startCustomerOrderPolling() {
+  stopCustomerOrderPolling();
+  if (!getActiveLiveOrder()) return;
+  pollActiveCustomerOrder();
+  customerOrderPollTimer = setInterval(pollActiveCustomerOrder, 5000);
+}
+function stopCustomerOrderPolling() {
+  if (customerOrderPollTimer) {
+    clearInterval(customerOrderPollTimer);
+    customerOrderPollTimer = null;
+  }
 }
 
 
@@ -4477,16 +4550,42 @@ function reactivateDeal(id) {
   showToast('Deal reactivated with stock ' + stock);
 }
 
-/** Rider marks picked up at business */
+/** Rider taps "I've arrived at the business" — starts the waiting-time
+ * clock (GYD 100/min) that's billed if the business hasn't confirmed the
+ * order ready yet by the time the rider actually picks it up. */
+async function markArrivedAtPickup(orderId) {
+  if (typeof api !== 'function') return;
+  const res = await api('/api/orders/' + encodeURIComponent(orderId) + '/arrived-pickup', {
+    method: 'POST', body: JSON.stringify({})
+  });
+  if (res && res.success) {
+    showToast("Arrival logged — waiting time (GYD 100/min) starts if the business isn't ready yet");
+    const btn = document.querySelector('#active-delivery .arrived-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '📍 Arrival logged'; btn.style.opacity = '0.6'; }
+  } else {
+    showToast((res && res.error) || 'Could not log arrival');
+  }
+}
+
+/** Rider marks picked up at business — gated server-side: only allowed once
+ * the business has confirmed the order is ready (see
+ * POST /api/orders/:id/ready-for-pickup and the picked_up gate in
+ * PATCH /api/orders/:id/status, server.js). */
 async function markOrderPickedUp(orderId) {
   const job = riderOrders.find(o => o.id === orderId) || window._activeRiderJob;
   if (!job) return;
+  if (typeof api === 'function') {
+    const res = await api('/api/orders/' + encodeURIComponent(orderId) + '/status', {
+      method: 'PATCH', body: JSON.stringify({ status: 'picked_up' })
+    });
+    if (!res || res.error) {
+      showToast((res && res.error) || "Couldn't mark picked up — the business may not have confirmed pickup yet.");
+      return;
+    }
+  }
   job.status = 'picked_up';
   job.pickedUpAt = new Date().toISOString();
   if (typeof saveRiderOrders === 'function') saveRiderOrders();
-  if (typeof api === 'function') {
-    try { await api('/api/orders/' + encodeURIComponent(orderId) + '/status', { method: 'PATCH', body: JSON.stringify({ status: 'picked_up' }) }); } catch (_) {}
-  }
   if (typeof updateLiveOrderStatus === 'function') {
     updateLiveOrderStatus(orderId, 'picked_up', {
       rider: assignedRider || (currentUser && { name: currentUser.name, phone: currentUser.phone })

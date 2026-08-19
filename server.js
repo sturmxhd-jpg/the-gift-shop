@@ -189,6 +189,34 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+// ─── Delivery pricing ───────────────────────────────────────────────────────
+// Standard rate: GYD 700/mile (pickup-at-business → drop-off-at-customer),
+// plus GYD 100/minute of rider waiting time at the business (see
+// computeDeliveryFee / the pickup gate below). Businesses don't store real
+// pickup coordinates today, so pickup falls back to the Georgetown-centre
+// point already used elsewhere (closestEligibleRider's default) — the same
+// approximation used throughout the app when a business address hasn't been
+// geocoded.
+const MILE_RATE_GYD = 700;
+const WAIT_RATE_PER_MIN_GYD = 100;
+const KM_TO_MILES = 0.621371;
+const DEFAULT_PICKUP_LAT = 6.812;
+const DEFAULT_PICKUP_LNG = -58.155;
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  return haversineKm(lat1, lon1, lat2, lon2) * KM_TO_MILES;
+}
+/** Real per-mile delivery fee from pickup (business) to drop-off (customer). Minimum charge is 1 mile so a very close drop-off is never billed GYD 0. */
+function computeDeliveryFee(pickupLat, pickupLng, dropLat, dropLng) {
+  const pLat = typeof pickupLat === 'number' ? pickupLat : DEFAULT_PICKUP_LAT;
+  const pLng = typeof pickupLng === 'number' ? pickupLng : DEFAULT_PICKUP_LNG;
+  const dLat = typeof dropLat === 'number' ? dropLat : DEFAULT_PICKUP_LAT;
+  const dLng = typeof dropLng === 'number' ? dropLng : DEFAULT_PICKUP_LNG;
+  const rawMiles = haversineMiles(pLat, pLng, dLat, dLng);
+  const miles = Math.round(rawMiles * 10) / 10;
+  const billedMiles = Math.max(1, miles);
+  return { miles, fee: Math.round(billedMiles * MILE_RATE_GYD) };
+}
+
 const FREE_RIDER_JOB_CAP = 3;
 const PAID_RIDER_JOB_CAP = 10;
 const RIDER_SUB_FEE_GYD = 5000;
@@ -544,18 +572,11 @@ async function handleAPI(req, res, pathname, query) {
   if (pathname === '/api/orders' && method === 'POST') {
     try {
       const body = await readBody(req);
-      const { items, fulfillment, paymentMethod, deliveryAddress, deliveryPhone, deliveryNotes, mmgPhone, subtotal, deliveryFee, pickupLat, pickupLng, deliveryLat, deliveryLng } = body;
+      const { items, fulfillment, paymentMethod, deliveryAddress, deliveryPhone, deliveryNotes, mmgPhone, subtotal, pickupLat, pickupLng, deliveryLat, deliveryLng, customerId, customerName, customerEmail } = body;
       if (!items || !items.length) return sendJSON(res, 400, { error: 'Cart is empty' });
       if (fulfillment === 'delivery' && (!deliveryAddress || !deliveryPhone)) {
         return sendJSON(res, 400, { error: 'Delivery address and contact number required' });
       }
-      // Offer the delivery to the closest available rider under their job cap
-      // (falls back to Georgetown centre when no real pickup coords are given —
-      // see the note above closestEligibleRider).
-      const best = fulfillment === 'delivery'
-        ? closestEligibleRider(typeof pickupLat === 'number' ? pickupLat : 6.812, typeof pickupLng === 'number' ? pickupLng : -58.155)
-        : null;
-      const rider = best ? best.r : null;
       // Tag each item with the business that listed it (looked up from the
       // live deals catalogue by item id) so orders/revenue can be scoped to
       // the correct business later — the client only sends title/price/qty,
@@ -568,42 +589,118 @@ async function handleAPI(req, res, pathname, query) {
           business: deal ? deal.business : null
         };
       });
+      const resolvedPickupLat = typeof pickupLat === 'number' ? pickupLat : DEFAULT_PICKUP_LAT;
+      const resolvedPickupLng = typeof pickupLng === 'number' ? pickupLng : DEFAULT_PICKUP_LNG;
+      const resolvedDropLat = typeof deliveryLat === 'number' ? deliveryLat : null;
+      const resolvedDropLng = typeof deliveryLng === 'number' ? deliveryLng : null;
+      // Real per-mile delivery fee — GYD 700/mile, pickup (business) to
+      // drop-off (customer). Computed server-side from real distance so it
+      // can't be spoofed by the client; waiting-time fee (GYD 100/min) is
+      // added later, once the order is actually picked up (see the
+      // ready-for-pickup / arrived-pickup / status:picked_up handlers below).
+      const feeCalc = fulfillment === 'delivery'
+        ? computeDeliveryFee(resolvedPickupLat, resolvedPickupLng, resolvedDropLat, resolvedDropLng)
+        : { miles: 0, fee: 0 };
       const order = {
         id: 'ORD-' + uuid(),
         items: taggedItems,
         fulfillment: fulfillment || 'pickup',
         paymentMethod: paymentMethod || 'cod',
+        customerId: customerId || null,
+        customerName: customerName || null,
+        customerEmail: customerEmail || null,
         deliveryAddress: deliveryAddress || null,
         deliveryPhone: deliveryPhone || null,
         deliveryNotes: deliveryNotes || '',
-        // Drop-off coordinates (best-effort, from the customer's browser at
-        // checkout) — used to alert them when their rider is close.
-        deliveryLat: typeof deliveryLat === 'number' ? deliveryLat : null,
-        deliveryLng: typeof deliveryLng === 'number' ? deliveryLng : null,
+        // Pickup (business) and drop-off (customer) coordinates — best effort;
+        // used for the per-mile fee above and for rider dispatch below.
+        pickupLat: resolvedPickupLat,
+        pickupLng: resolvedPickupLng,
+        deliveryLat: resolvedDropLat,
+        deliveryLng: resolvedDropLng,
+        distanceMiles: feeCalc.miles,
         mmgPhone: mmgPhone || null,
         subtotal: subtotal || items.reduce((s, i) => s + i.price * i.qty, 0),
-        deliveryFee: deliveryFee || 0,
+        deliveryFee: feeCalc.fee,
+        // No rider is assigned at creation time — the order is instead posted
+        // to the rider job board (below) and a rider must explicitly accept
+        // it via POST /api/riders/jobs/:id/accept, per the real dispatch flow
+        // (notify riders → rider accepts → business confirms ready → pickup).
         status: 'confirmed',
-        rider: rider ? {
-          id: rider.id, name: rider.name, phone: rider.phone,
-          rating: rider.rating, ratingCount: rider.ratingCount,
-          avatar: rider.avatar, photo: rider.photo || null, lat: rider.lat, lng: rider.lng
-        } : null,
+        rider: null,
+        readyForPickupAt: null,
+        arrivedAtPickupAt: null,
+        pickedUpAt: null,
+        waitingMinutes: 0,
+        waitingFee: 0,
         createdAt: new Date().toISOString(),
         podPhoto: null, podNotes: null
       };
       order.total = order.subtotal + order.deliveryFee;
       orders.unshift(order);
+
+      // Post the delivery to the rider job board — the single real path that
+      // notifies riders a job is available (they see it via GET
+      // /api/riders/jobs?riderId=... and accept it explicitly). This
+      // replaces the old client-side duplicate POST to /api/riders/jobs so
+      // there's exactly one order-creation path driving both records.
+      if (order.fulfillment === 'delivery') {
+        const primaryBusiness = taggedItems.find(i => i.business)?.business || 'Business';
+        const itemSummary = taggedItems.map(i => i.title || i.name || 'Item').join(', ');
+        availableJobs.unshift({
+          id: order.id,
+          business: primaryBusiness,
+          item: itemSummary,
+          address: order.deliveryAddress || '',
+          phone: order.deliveryPhone || '',
+          customer: order.customerName || 'Customer',
+          fee: order.deliveryFee,
+          distance: order.distanceMiles ? (order.distanceMiles + ' mi') : '—',
+          lat: order.pickupLat,
+          lng: order.pickupLng,
+          total: order.subtotal,
+          createdAt: order.createdAt,
+          status: 'available',
+          declinedBy: []
+        });
+        persistJobs();
+      }
+
       persistOrders();
       return sendJSON(res, 201, {
         success: true, order,
         message: fulfillment === 'delivery'
-          ? 'Order placed! A rider will pick it up soon.'
+          ? 'Order placed! Nearby riders have been notified.'
           : 'Order placed! Show your voucher in-store.'
       });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Invalid JSON body' });
     }
+  }
+
+  // Real-time, business-scoped order feed (status, assigned rider, pickup
+  // confirmation timestamp) — what the business "Incoming Orders" panel
+  // polls instead of relying on local-only/simulated order state.
+  if (pathname === '/api/business/orders' && method === 'GET') {
+    const businessId = query.businessId;
+    if (!businessId) return sendJSON(res, 400, { error: 'businessId required' });
+    const mine = orders.filter(o => o.items.some(i => i.businessId === businessId));
+    const mapped = mine.map(o => {
+      const myItems = o.items.filter(i => i.businessId === businessId);
+      const myTotal = myItems.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);
+      return {
+        id: o.id,
+        item: myItems.map(i => i.title || i.name || 'Item').join(', '),
+        customer: o.customerName || 'Customer',
+        type: o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup',
+        total: myTotal,
+        status: o.status,
+        rider: o.rider ? { name: o.rider.name, phone: o.rider.phone } : null,
+        readyForPickupAt: o.readyForPickupAt || null,
+        createdAt: o.createdAt
+      };
+    });
+    return sendJSON(res, 200, { orders: mapped });
   }
 
   const orderMatch = pathname.match(/^\/api\/orders\/([^/]+)$/);
@@ -613,16 +710,76 @@ async function handleAPI(req, res, pathname, query) {
     return sendJSON(res, 200, order);
   }
 
+  // Business confirms the order is physically ready for the rider to
+  // collect. This is the gate the pickup step below enforces — a rider
+  // cannot mark an order picked up until this has happened.
+  const readyMatch = pathname.match(/^\/api\/orders\/([^/]+)\/ready-for-pickup$/);
+  if (readyMatch && method === 'POST') {
+    const order = orders.find(o => o.id === readyMatch[1]);
+    if (!order) return sendJSON(res, 404, { error: 'Order not found' });
+    if (order.status === 'picked_up' || order.status === 'delivered') {
+      return sendJSON(res, 400, { error: 'This order has already been picked up.' });
+    }
+    order.status = 'ready_for_pickup';
+    order.readyForPickupAt = new Date().toISOString();
+    persistOrders();
+    return sendJSON(res, 200, { success: true, order });
+  }
+
+  // Rider marks that they've arrived at the business to collect the order —
+  // starts the waiting-time clock (GYD 100/min) used if the business hasn't
+  // confirmed ready-for-pickup yet.
+  const arrivedMatch = pathname.match(/^\/api\/orders\/([^/]+)\/arrived-pickup$/);
+  if (arrivedMatch && method === 'POST') {
+    const order = orders.find(o => o.id === arrivedMatch[1]);
+    if (!order) return sendJSON(res, 404, { error: 'Order not found' });
+    if (!order.arrivedAtPickupAt) {
+      order.arrivedAtPickupAt = new Date().toISOString();
+      persistOrders();
+    }
+    return sendJSON(res, 200, { success: true, order });
+  }
+
   const orderStatusMatch = pathname.match(/^\/api\/orders\/([^/]+)\/status$/);
   if (orderStatusMatch && method === 'PATCH') {
     try {
       const body = await readBody(req);
       const order = orders.find(o => o.id === orderStatusMatch[1]);
       if (!order) return sendJSON(res, 404, { error: 'Order not found' });
-      if (body.status) order.status = body.status;
+
+      if (body.status === 'picked_up') {
+        // The business must have confirmed the order is ready before a
+        // rider is allowed to mark it picked up — this is the requested
+        // "business confirms availability, only then rider can pick up" gate.
+        if (order.status !== 'ready_for_pickup') {
+          return sendJSON(res, 400, { error: "The business hasn't confirmed this order is ready for pickup yet." });
+        }
+        const nowIso = new Date().toISOString();
+        order.pickedUpAt = nowIso;
+        // Waiting-time fee: only billed if the rider arrived at the business
+        // before it confirmed ready — GYD 100/min for the gap.
+        if (order.arrivedAtPickupAt && order.readyForPickupAt) {
+          const arrived = new Date(order.arrivedAtPickupAt).getTime();
+          const ready = new Date(order.readyForPickupAt).getTime();
+          if (arrived < ready) {
+            const waitMinutes = Math.ceil((ready - arrived) / 60000);
+            order.waitingMinutes = waitMinutes;
+            order.waitingFee = waitMinutes * WAIT_RATE_PER_MIN_GYD;
+            order.total = (order.total || 0) + order.waitingFee;
+          }
+        }
+        order.status = 'picked_up';
+      } else if (body.status === 'delivered') {
+        if (order.status !== 'picked_up') {
+          return sendJSON(res, 400, { error: 'This order has not been picked up yet.' });
+        }
+        order.status = 'delivered';
+        order.deliveredAt = new Date().toISOString();
+      } else if (body.status) {
+        order.status = body.status;
+      }
       if (body.podPhoto) order.podPhoto = body.podPhoto;
       if (body.podNotes !== undefined) order.podNotes = body.podNotes;
-      if (body.status === 'delivered') order.deliveredAt = new Date().toISOString();
       persistOrders();
       return sendJSON(res, 200, order);
     } catch (e) {
